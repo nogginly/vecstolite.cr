@@ -1,0 +1,12 @@
+.DS_Store
+config/dev
+/bin/
+/libs/
+/lib/
+/.crystal/
+/.shards/
+.deleted_files/
+out/
+tmp*
+*enkaidu*
+CLAUDE.md

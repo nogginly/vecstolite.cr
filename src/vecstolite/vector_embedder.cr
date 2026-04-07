@@ -1,0 +1,21 @@
+require "simd"
+
+module Vecstolite
+  # Leverage SIMD vector embedding maths.
+  {% if flag?(:aarch64) && flag?(:darwin) %}
+    VECM = SIMD::NEON.new
+  {% else %}
+    VECM = SIMD.instance
+  {% end %}
+
+  # The vector embedding is a slice of Float32 values
+  alias Embedding = Slice(Float32)
+
+  module VectorEmbedder
+    # Returns a fixed-length Float32 vector embedding of the given text
+    abstract def embed(text : String) : Embedding
+
+    # Returns the number of dimensions
+    abstract def dimensions : Int32
+  end
+end

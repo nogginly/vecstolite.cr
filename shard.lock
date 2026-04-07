@@ -1,0 +1,22 @@
+version: 2.0
+shards:
+  ameba:
+    git: https://github.com/crystal-ameba/ameba.git
+    version: 1.6.4
+
+  db:
+    git: https://github.com/crystal-lang/crystal-db.git
+    version: 0.14.0
+
+  simd:
+    git: https://github.com/nogginly/simd.cr.fork.git
+    version: 1.0.0+git.commit.22cfba44c1a59113124fa565c1f8279e409e2443
+
+  spectator:
+    git: https://gitlab.com/arctic-fox/spectator.git
+    version: 0.12.4
+
+  sqlite3:
+    git: https://github.com/crystal-lang/crystal-sqlite3.git
+    version: 0.22.0
+
