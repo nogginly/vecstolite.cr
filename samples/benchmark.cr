@@ -2,11 +2,7 @@ require "../src/vecstolite"
 
 require "benchmark"
 
-# ---------------------------------------------------------------------------
-# Quick demo — run with: crystal vector_store.cr
-# ---------------------------------------------------------------------------
-
-USAGE = "Usage: crystal test_perf01.cr -- <path_to_model_dir> <path_to_sentence_file>"
+USAGE = "Usage: benchmark <path_to_static_model_dir> <path_to_sentence_file>"
 model_dir = ARGV[0]? || abort(USAGE)
 text_file = ARGV[1]? || abort(USAGE)
 
