@@ -16,7 +16,7 @@ dependencies:
 
 ### Development
 
-See [DEVELOPMENT](./DEVELOPMENT.md) for how to build and run `enkaidu`.
+See [DEVELOPMENT](./DEVELOPMENT.md) for how to build `vecstolite` and run the samples.
 
 ## Contributions, by invitation!
 
