@@ -26,7 +26,7 @@ module Vecstolite
 
       @entries
         .map { |e| SearchResult.new(e.text, cosine_similarity(query_vec, e.vector)) }
-        .sort_by { |r| -r.score }
+        .sort_by! { |r| -r.score }
         .first(k)
     end
 

@@ -182,7 +182,7 @@ module Vecstolite
 
           shape_arr = tensor_obj["shape"]?.try(&.as_a?) ||
                       raise Error.new("Missing 'shape' in tensor '#{key}'")
-          shape = shape_arr.map { |v| v.as_i64 }
+          shape = shape_arr.map(&.as_i64)
 
           offsets_arr = tensor_obj["data_offsets"]?.try(&.as_a?) ||
                         raise Error.new("Missing 'data_offsets' in tensor '#{key}'")

@@ -208,10 +208,10 @@ module Vecstolite
     private def punctuation?(ch : Char) : Bool
       cp = ch.ord
       # ASCII punctuation ranges
-      return true if (cp >= 33 && cp <= 47)   # !"#$%&'()*+,-./
-      return true if (cp >= 58 && cp <= 64)   # :;<=>?@
-      return true if (cp >= 91 && cp <= 96)   # [\]^_`
-      return true if (cp >= 123 && cp <= 126) # {|}~
+      return true if cp >= 33 && cp <= 47   # !"#$%&'()*+,-./
+      return true if cp >= 58 && cp <= 64   # :;<=>?@
+      return true if cp >= 91 && cp <= 96   # [\]^_`
+      return true if cp >= 123 && cp <= 126 # {|}~
       # Unicode: anything in the P (punctuation) or S (symbol) general category.
       # Crystal's Char#mark? covers Mn/Mc/Me; we use the codepoint path above for
       # those.  For P and S we rely on the fact that non-ASCII punctuation and
