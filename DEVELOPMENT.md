@@ -28,6 +28,19 @@ Run `ops build-release` to make a release build in the `bin/release/` folder
 
 Run `ops build-debug` to make a debug build in the `bin/debug/` folder
 
+## Samples
+
+### Benchmark
+
+Using `ops bd` or `ops br` will build the `benchmark` sample app.
+
+To run the benchmark you will need to inputs:
+
+1. Path to a static embedder
+2. Path to a text file containing sentences per line
+
+The benchmark adds all the sentences, and then randomly samples 10% to search.
+
 ## Contributions
 
 See [README](./README.md)
