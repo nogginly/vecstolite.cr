@@ -154,11 +154,11 @@ module Vecstolite
         end
       end
 
-      # def reset_with(nodes, entry_point, max_layer) : Nil
-      #   @nodes = nodes
-      #   @entry_point = entry_point
-      #   @max_layer = max_layer
-      # end
+      protected def reset_with(nodes, entry_point, max_layer) : Nil
+        @nodes = nodes
+        @entry_point = entry_point
+        @max_layer = max_layer
+      end
 
       # Return the *k* approximate nearest neighbours for *query*.
       # *ef* controls recall vs speed — higher is slower but more accurate.
@@ -285,7 +285,7 @@ module Vecstolite
       ) : Array(Int32)
         neighbour_ids
           .map { |nb_id| {nb_id, distance(base_vec, @nodes[nb_id].vector)} }
-          .sort_by { |_, d| d }
+          .sort_by! { |_, d| d }
           .first(m)
           .map { |nb_id, _| nb_id }
       end

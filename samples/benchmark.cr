@@ -14,8 +14,8 @@ File.delete("demo_m16.db") if File.exists?("demo_m16.db")
 File.delete("demo_m8.db") if File.exists?("demo_m8.db")
 
 vector_stores = {
-  # "SQLite3(M=16, EF=200)" => SQLiteVectorStore.open("demo_m16.db", embedder, m: 16, ef_construction: 200),
-  # "SQLite3(M=8, EF=200)"  => SQLiteVectorStore.open("demo_m8.db", embedder, m: 8, ef_construction: 200),
+  "SQLite3(M=16, EF=200)" => Vecstolite::SQLiteVectorStore.open("tmp_bench_m16.db", embedder, m: 16, ef_construction: 200),
+  "SQLite3(M=8, EF=200)"  => Vecstolite::SQLiteVectorStore.open("tmp_bench_m8.db", embedder, m: 8, ef_construction: 200),
   "Indexed(M=16, EF=200)" => Vecstolite::IndexedVectorStore.new(embedder, m: 16, ef_construction: 200),
   "Indexed(M=8, EF=200)"  => Vecstolite::IndexedVectorStore.new(embedder, m: 8, ef_construction: 200),
   "Indexed(M=16, EF=100)" => Vecstolite::IndexedVectorStore.new(embedder, m: 16, ef_construction: 100),
@@ -45,8 +45,8 @@ vector_stores.each do |name, store|
   puts "#{result}\t#{name}"
 end
 
-# vector_stores.each do |_, store|
-#   if store.is_a? SQLiteVectorStore
-#     store.close
-#   end
-# end
+vector_stores.each do |_, store|
+  if store.is_a? Vecstolite::SQLiteVectorStore
+    store.close
+  end
+end
