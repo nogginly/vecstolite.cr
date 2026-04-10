@@ -75,8 +75,9 @@ jobs:
       run: |
         mkdir bin -ErrorAction SilentlyContinue
         mkdir bin\release -ErrorAction SilentlyContinue
-        choco install sqlite
-        copy "C:\ProgramData\chocolatey\lib\SQLite\tools\sqlite3.lib" .
+        choco install sqlite --params "/NoTools"
+        copy "C:\ProgramData\chocolatey\lib\SQLite\tools\*.lib" .
+        copy "C:\ProgramData\chocolatey\lib\SQLite\*.lib" .
 
     - name: Build Release (Windows)
       if: ${{ runner.os == 'Windows' }}
