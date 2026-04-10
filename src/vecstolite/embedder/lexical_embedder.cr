@@ -7,11 +7,14 @@ module Vecstolite
 
     VOCAB_SIZE = 1024
 
+    # Needed to get consistent hashes across runs
+    private HASHER = Crystal::Hasher.new(1, 1)
+
     # Returns a fixed-length Float32 vector for *text*.
     def embed(text : String) : Embedding
       vec = Embedding.new(VOCAB_SIZE, 0.0_f32)
       tokens(text).each do |token|
-        idx = token.hash.abs % VOCAB_SIZE
+        idx = token.hash(HASHER).result.abs % VOCAB_SIZE
         vec[idx] += 1.0_f32
       end
       normalize(vec)
