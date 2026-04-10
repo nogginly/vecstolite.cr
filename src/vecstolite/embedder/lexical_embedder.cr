@@ -5,24 +5,29 @@ module Vecstolite
   struct LexicalEmbedder
     include VectorEmbedder
 
-    VOCAB_SIZE = 1024
+    DEFAULT_DIMS = 1024
+
+    getter dimensions : Int32
 
     # Needed to get consistent hashes across runs
     private HASHER = Crystal::Hasher.new(1, 1)
 
+    def initialize(@dimensions = DEFAULT_DIMS)
+    end
+
+    # Unique name for the embedding model
+    def model_name : String
+      "vecstolite/lexical"
+    end
+
     # Returns a fixed-length Float32 vector for *text*.
     def embed(text : String) : Embedding
-      vec = Embedding.new(VOCAB_SIZE, 0.0_f32)
+      vec = Embedding.new(dimensions, 0.0_f32)
       tokens(text).each do |token|
-        idx = token.hash(HASHER).result.abs % VOCAB_SIZE
+        idx = token.hash(HASHER).result.abs % dimensions
         vec[idx] += 1.0_f32
       end
       normalize(vec)
-    end
-
-    # Returns the number of dimensions
-    def dimensions : Int32
-      VOCAB_SIZE
     end
 
     # Simple word-like tokens split out of the text

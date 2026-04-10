@@ -67,6 +67,11 @@ module Vecstolite
       @timeout = timeout
     end
 
+    # Unique name for the embedding model
+    def model_name : String
+      @model_name ||= "#{URI.parse(@base_url).host}/#{@model}"
+    end
+
     # Embed a single string.  Returns the embedding as Embedding.
     def embed(text : String) : Embedding
       parse_response(post(build_request_body(text)))

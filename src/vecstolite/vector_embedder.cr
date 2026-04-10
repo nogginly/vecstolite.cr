@@ -12,6 +12,9 @@ module Vecstolite
   alias Embedding = Slice(Float32)
 
   module VectorEmbedder
+    # Unique name for the embedding model
+    abstract def model_name : String
+
     # Returns a fixed-length Float32 vector embedding of the given text
     abstract def embed(text : String) : Embedding
 
