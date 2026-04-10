@@ -66,3 +66,11 @@ jobs:
     - name: Build Release
       if: ${{ runner.os != 'Windows' }}
       run: SHARDS_BIN_PATH=bin/release shards build --release
+
+    - name: Run Release
+      if: ${{ runner.os != 'Windows' }}
+      run: bin/release/benchmark 2>&1 | grep "Usage"
+
+    - name: Run Test 00
+      if: ${{ runner.os != 'Windows' }}
+      run: crystal run --release samples/test00.cr
