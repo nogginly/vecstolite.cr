@@ -75,6 +75,7 @@ jobs:
       run: |
         mkdir bin -ErrorAction SilentlyContinue
         mkdir bin\release -ErrorAction SilentlyContinue
+        choco install sqlite
 
     - name: Build Release (Windows)
       if: ${{ runner.os == 'Windows' }}
