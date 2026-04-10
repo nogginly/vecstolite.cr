@@ -27,3 +27,6 @@ actions:
   lint:
     command: bin/ameba src/
     description: Run Crystal source linter (ameba)
+  test:
+    command: crystal spec -Dtest
+    description: Run all tests (spectator)

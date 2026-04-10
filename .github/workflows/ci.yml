@@ -51,10 +51,9 @@ jobs:
       if: ${{ runner.os == 'Linux' }}
       run: bin/ameba src/
 
-    # ON HOLD UNTIL WE ADD TESTS
-    # - name: Run tests (Linux)
-    #   if: ${{ runner.os == 'Linux' }}
-    #   run: crystal spec -Dtest
+    - name: Run tests (Linux)
+      if: ${{ runner.os == 'Linux' }}
+      run: crystal spec -Dtest
 
     # ---- Build releases on all platforms
 

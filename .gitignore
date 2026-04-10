@@ -5,6 +5,7 @@ config/dev
 /lib/
 /.crystal/
 /.shards/
+.spectator-failures
 .deleted_files/
 out/
 tmp*
