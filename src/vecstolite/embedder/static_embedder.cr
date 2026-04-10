@@ -37,9 +37,12 @@ module Vecstolite
     getter full_dims : Int32 # native embedding dimension (e.g. 1024)
     getter vocab_size : Int32
 
+    # Unique name for the embedding model
+    getter model_name : String
+
     # Load from a model directory containing `model.safetensors` + `tokenizer.json` files.
     # Supports "WordPiece" tokenizers only.
-    def self.load(model_dir : String, truncate_dims : Int32? = nil) : self
+    def self.load(model_dir : String, name : String? = nil, truncate_dims : Int32? = nil) : self
       st_path = File.join(model_dir, "model.safetensors")
       tok_path = File.join(model_dir, "tokenizer.json")
 
@@ -49,10 +52,14 @@ module Vecstolite
       st = SafeTensors::File.load(st_path)
       tok = WordPieceTokenizer.load(tok_path)
 
-      new(st, tok, truncate_dims)
+      # Extract model name from path if none given
+      # E.g. foo/bar => "bar"
+      # E.g. foo => "foo"
+      new("static/#{name || Path.new(model_dir).basename}", st, tok, truncate_dims)
     end
 
     private def initialize(
+      @model_name : String,
       @st : SafeTensors::File,
       @tokenizer : WordPieceTokenizer,
       @truncate_dims : Int32? = nil,

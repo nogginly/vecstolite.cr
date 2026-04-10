@@ -85,9 +85,9 @@ module Vecstolite
           end
         end
 
-        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('entry_point', ?)", idx.@entry_point
-        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('max_layer',   ?)", idx.@max_layer
-        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('graph_saved', ?)", 1
+        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('entry_point', ?, NULL)", idx.@entry_point
+        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('max_layer',   ?, NULL)", idx.@max_layer
+        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('graph_saved', ?, NULL)", 1
       end
     end
 
@@ -176,16 +176,17 @@ module Vecstolite
       @db.exec <<-SQL
       CREATE TABLE IF NOT EXISTS #{TABLE_META} (
         key   TEXT    PRIMARY KEY,
-        value INTEGER NOT NULL
+        value INTEGER NOT NULL,
+        text  TEXT    DEFAULT NULL
       )
       SQL
 
       @db.exec <<-SQL
       CREATE TABLE IF NOT EXISTS #{TABLE_ENTRIES} (
-        id      INTEGER PRIMARY KEY,
-        text    TEXT    NOT NULL,
-        vector  BLOB    NOT NULL,
-        deleted INTEGER NOT NULL DEFAULT 0
+        id        INTEGER PRIMARY KEY,
+        text      TEXT    NOT NULL,
+        vector    BLOB    NOT NULL,
+        deleted   INTEGER NOT NULL DEFAULT 0
       )
       SQL
 
@@ -207,12 +208,14 @@ module Vecstolite
       @db.exec "CREATE INDEX IF NOT EXISTS #{INDEX_EDGES} ON #{TABLE_GRAPH_EDGES} (node_id, layer)"
 
       # Write schema version if this is a fresh database.
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('schema_version', ?)", SCHEMA_VERSION
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('m',              ?)", @m
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('ef_construction',?)", @ef_construction
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('graph_saved',    ?)", 0
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('entry_point',    ?)", -1
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('max_layer',      ?)", -1
+      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('schema_version', ?, NULL)", SCHEMA_VERSION
+      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('m',              ?, NULL)", @m
+      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('ef_construction',?, NULL)", @ef_construction
+      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('graph_saved',    ?, NULL)", 0
+      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('entry_point',    ?, NULL)", -1
+      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('max_layer',      ?, NULL)", -1
+      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('dimensions',      ?, NULL)", @embedder.dimensions
+      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('embedder',      1, ?)", @embedder.model_name
 
       # Read back params (may differ from constructor args if db already existed).
       meta = read_meta
