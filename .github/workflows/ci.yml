@@ -75,9 +75,8 @@ jobs:
       run: |
         mkdir bin -ErrorAction SilentlyContinue
         mkdir bin\release -ErrorAction SilentlyContinue
-        choco install sqlite --params "/NoTools"
-        copy "C:\ProgramData\chocolatey\lib\SQLite\tools\*.lib" .
-        copy "C:\ProgramData\chocolatey\lib\SQLite\*.lib" .
+        choco install sqlite
+        echo "LIB=C:\ProgramData\chocolatey\lib\SQLite\tools;$env:LIB" >> $env:GITHUB_ENV
 
     - name: Build Release (Windows)
       if: ${{ runner.os == 'Windows' }}
