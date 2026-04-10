@@ -47,10 +47,9 @@ jobs:
       if: ${{ runner.os == 'Linux' }}
       run: crystal tool format; git diff --exit-code src
 
-    # ON HOLD UNTIL WE IMPROVE CODE
-    # - name: Run static code analysis (Linux)
-    #   if: ${{ runner.os == 'Linux' }}
-    #   run: bin/ameba src/
+    - name: Run static code analysis (Linux)
+      if: ${{ runner.os == 'Linux' }}
+      run: bin/ameba src/
 
     # ON HOLD UNTIL WE ADD TESTS
     # - name: Run tests (Linux)
