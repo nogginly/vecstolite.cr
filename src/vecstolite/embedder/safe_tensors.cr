@@ -23,6 +23,19 @@ module Vecstolite
   module SafeTensors
     class Error < Exception; end
 
+    private DTYPE_MAP = {
+      "F64":  DType::F64,
+      "F32":  DType::F32,
+      "F16":  DType::F16,
+      "BF16": DType::BF16,
+      "I64":  DType::I64,
+      "I32":  DType::I32,
+      "I16":  DType::I16,
+      "I8":   DType::I8,
+      "U8":   DType::U8,
+      "BOOL": DType::BOOL,
+    }
+
     # Supported element types.  We only need F32 and F16 for embedding models,
     # but the full set is listed so parsing never silently ignores an unknown dtype.
     enum DType
@@ -38,19 +51,7 @@ module Vecstolite
       BOOL
 
       def self.from_string(s : String) : DType
-        case s
-        when "F64"  then F64
-        when "F32"  then F32
-        when "F16"  then F16
-        when "BF16" then BF16
-        when "I64"  then I64
-        when "I32"  then I32
-        when "I16"  then I16
-        when "I8"   then I8
-        when "U8"   then U8
-        when "BOOL" then BOOL
-        else             raise Error.new("Unknown safetensors dtype: #{s}")
-        end
+        DTYPE_MAP[s]? || raise Error.new("Unknown safetensors dtype: #{s}")
       end
 
       # Bytes per scalar element.
@@ -75,7 +76,7 @@ module Vecstolite
       end
 
       def element_count : Int64
-        @shape.empty? ? 1_i64 : @shape.reduce(1_i64) { |acc, d| acc * d }
+        @shape.empty? ? 1_i64 : @shape.reduce(1_i64) { |acc, value| acc * value }
       end
 
       def byte_size : Int64
@@ -99,7 +100,7 @@ module Vecstolite
 
       # Loads a safetensors file from disk.
       def self.load(path : String) : self
-        bytes = ::File.open(path, "rb") { |f| Bytes.new(f.size).tap { |b| f.read_fully(b) } }
+        bytes = ::File.open(path, "rb") { |file| Bytes.new(file.size).tap { |buf| file.read_fully(buf) } }
         parse(bytes)
       end
 
@@ -176,34 +177,36 @@ module Vecstolite
           next if key == "__metadata__"
 
           tensor_obj = val.as_h? || raise Error.new("Tensor entry '#{key}' is not an object")
-
-          dtype_str = tensor_obj["dtype"]?.try(&.as_s?) ||
-                      raise Error.new("Missing 'dtype' in tensor '#{key}'")
-
-          shape_arr = tensor_obj["shape"]?.try(&.as_a?) ||
-                      raise Error.new("Missing 'shape' in tensor '#{key}'")
-          shape = shape_arr.map(&.as_i64)
-
-          offsets_arr = tensor_obj["data_offsets"]?.try(&.as_a?) ||
-                        raise Error.new("Missing 'data_offsets' in tensor '#{key}'")
-          raise Error.new("'data_offsets' must have exactly 2 elements in '#{key}'") \
-            unless offsets_arr.size == 2
-          off_start = offsets_arr[0].as_i64
-          off_end = offsets_arr[1].as_i64
-
-          raise Error.new("Negative offset in tensor '#{key}'") \
-            if off_start < 0 || off_end < 0
-          raise Error.new("Inverted offsets in tensor '#{key}'") \
-            if off_start > off_end
-          raise Error.new("Offset out of bounds in tensor '#{key}': end=#{off_end} > data_block_size=#{data_block_size}") \
-            if off_end > data_block_size
-
-          dtype = DType.from_string(dtype_str)
-          offsets = {off_start, off_end}
-          tensors[key] = TensorInfo.new(dtype, shape, offsets)
+          tensors[key] = parse_tensor(key, data_block_size, tensor_obj)
         end
 
         tensors
+      end
+
+      private def self.parse_tensor(key, data_block_size, tensor_obj)
+        dtype_str = tensor_obj["dtype"]?.try(&.as_s?) ||
+                    raise Error.new("Missing 'dtype' in tensor '#{key}'")
+
+        shape_arr = tensor_obj["shape"]?.try(&.as_a?) ||
+                    raise Error.new("Missing 'shape' in tensor '#{key}'")
+        shape = shape_arr.map(&.as_i64)
+
+        offsets_arr = tensor_obj["data_offsets"]?.try(&.as_a?) ||
+                      raise Error.new("Missing 'data_offsets' in tensor '#{key}'")
+        raise Error.new("'data_offsets' must have exactly 2 elements in '#{key}'") \
+          unless offsets_arr.size == 2
+
+        off_start = offsets_arr[0].as_i64
+        off_end = offsets_arr[1].as_i64
+
+        raise Error.new("Negative offset in tensor '#{key}'") if off_start < 0 || off_end < 0
+        raise Error.new("Inverted offsets in tensor '#{key}'") if off_start > off_end
+        raise Error.new("Offset out of bounds in tensor '#{key}': end=#{off_end} > data_block_size=#{data_block_size}") \
+          if off_end > data_block_size
+
+        dtype = DType.from_string(dtype_str)
+        offsets = {off_start, off_end}
+        TensorInfo.new(dtype, shape, offsets)
       end
     end
   end

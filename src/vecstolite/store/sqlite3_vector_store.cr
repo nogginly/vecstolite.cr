@@ -111,7 +111,7 @@ module Vecstolite
     end
 
     def add_all(texts : Enumerable(String)) : Nil
-      texts.each { |t| add(t) }
+      texts.each { |text| add(text) }
     end
 
     # Delete an entry by id.  Marks the row deleted in SQLite and rebuilds the
@@ -133,8 +133,8 @@ module Vecstolite
       return [] of SearchResult if @entries.empty?
 
       query_vec = @embedder.embed(query)
-      @index.search(query_vec, k: k, ef: ef).map do |r|
-        SearchResult.new(@entries[r.id].text, r.score)
+      @index.search(query_vec, k: k, ef: ef).map do |result|
+        SearchResult.new(@entries[result.id].text, result.score)
       end
     end
 
@@ -226,11 +226,11 @@ module Vecstolite
     # Restore entries and HNSW index from the database.
     private def load_from_db(meta : Hash(String, Int32)) : Nil
       # Load non-deleted entries in ID order.
-      @db.query("SELECT id, text, vector FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |rs|
-        rs.each do
-          _id = rs.read(Int32)
-          text = rs.read(String)
-          blob = rs.read(Bytes)
+      @db.query("SELECT id, text, vector FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |results|
+        results.each do
+          _id = results.read(Int32)
+          text = results.read(String)
+          blob = results.read(Bytes)
           vector = unpack_vector(blob)
           @entries << Entry.new(text, vector)
         end
@@ -252,16 +252,16 @@ module Vecstolite
       ix_nodes = [] of HNSW::HNSWNode
 
       # Create node shells.
-      @entries.each_with_index do |entry, _|
+      @entries.each do |entry|
         node = HNSW::HNSWNode.new(entry.vector, 0, @m)
         ix_nodes << node
       end
 
       # Restore neighbour lists.
-      @db.query("SELECT id, layer_count FROM #{TABLE_GRAPH_NODES} ORDER BY id") do |rs|
-        rs.each do
-          node_id = rs.read(Int32)
-          layer_count = rs.read(Int32)
+      @db.query("SELECT id, layer_count FROM #{TABLE_GRAPH_NODES} ORDER BY id") do |results|
+        results.each do
+          node_id = results.read(Int32)
+          layer_count = results.read(Int32)
           next unless node_id < ix_nodes.size
           ix_nodes[node_id].neighbours =
             Array(Array(Int32)).new(layer_count) { [] of Int32 }
@@ -270,11 +270,11 @@ module Vecstolite
 
       @db.query(
         "SELECT node_id, layer, neighbour_id FROM #{TABLE_GRAPH_EDGES} ORDER BY node_id, layer"
-      ) do |rs|
-        rs.each do
-          node_id = rs.read(Int32)
-          layer = rs.read(Int32)
-          neighbour_id = rs.read(Int32)
+      ) do |results|
+        results.each do
+          node_id = results.read(Int32)
+          layer = results.read(Int32)
+          neighbour_id = results.read(Int32)
           next unless node_id < ix_nodes.size
           ix_nodes[node_id].neighbours[layer] << neighbour_id
         end
@@ -300,8 +300,8 @@ module Vecstolite
 
     private def read_meta : Hash(String, Int32)
       meta = {} of String => Int32
-      @db.query("SELECT key, value FROM #{TABLE_META}") do |rs|
-        rs.each { meta[rs.read(String)] = rs.read(Int32) }
+      @db.query("SELECT key, value FROM #{TABLE_META}") do |results|
+        results.each { meta[results.read(String)] = results.read(Int32) }
       end
       meta
     end

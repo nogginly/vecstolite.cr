@@ -29,8 +29,8 @@ module Vecstolite
       return [] of SearchResult if @entries.empty?
 
       query_vec = @embedder.embed(query)
-      @index.search(query_vec, k: k, ef: ef).map do |r|
-        SearchResult.new(@entries[r.id].text, r.score)
+      @index.search(query_vec, k: k, ef: ef).map do |result|
+        SearchResult.new(@entries[result.id].text, result.score)
       end
     end
 

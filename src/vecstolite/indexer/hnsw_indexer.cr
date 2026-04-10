@@ -119,29 +119,29 @@ module Vecstolite
         ep = @entry_point
 
         # Phase 1: descend from @max_layer down to node_layer + 1 (greedy, 1 candidate).
-        (@max_layer).downto(node_layer + 1) do |lc|
-          ep = greedy_descend(vector, ep, lc)
+        (@max_layer).downto(node_layer + 1) do |layer|
+          ep = greedy_descend(vector, ep, layer)
         end
 
         # Phase 2: from node_layer down to 0, do a beam search and wire neighbours.
-        [node_layer, @max_layer].min.downto(0) do |lc|
-          m_at_layer = lc == 0 ? @m_max0 : @m
-          ef_at_layer = lc == 0 ? @ef_construction : reduced_ef_higher_layers
+        [node_layer, @max_layer].min.downto(0) do |layer|
+          m_at_layer = layer == 0 ? @m_max0 : @m
+          ef_at_layer = layer == 0 ? @ef_construction : reduced_ef_higher_layers
 
-          candidates = search_layer(vector, ep, ef_at_layer, lc)
+          candidates = search_layer(vector, ep, ef_at_layer, layer)
           neighbours = select_neighbours(vector, candidates, m_at_layer)
 
-          node.neighbours[lc] = neighbours.map(&.id)
+          node.neighbours[layer] = neighbours.map(&.id)
           ep = neighbours.first.id unless neighbours.empty?
 
           # Wire back-edges (mutual connections).
-          neighbours.each do |nb|
-            nb_node = @nodes[nb.id]
-            unless nb_node.neighbours[lc].includes?(id)
-              nb_node.neighbours[lc] << id
+          neighbours.each do |neighbor|
+            nb_node = @nodes[neighbor.id]
+            unless nb_node.neighbours[layer].includes?(id)
+              nb_node.neighbours[layer] << id
               # Prune if over limit.
-              if nb_node.neighbours[lc].size > m_at_layer
-                nb_node.neighbours[lc] = prune_neighbours(nb_node.vector, nb_node.neighbours[lc], m_at_layer)
+              if nb_node.neighbours[layer].size > m_at_layer
+                nb_node.neighbours[layer] = prune_neighbours(nb_node.vector, nb_node.neighbours[layer], m_at_layer)
               end
             end
           end
@@ -169,8 +169,8 @@ module Vecstolite
         ep = @entry_point
 
         # Descend to layer 1 greedily.
-        @max_layer.downto(1) do |lc|
-          ep = greedy_descend(query, ep, lc)
+        @max_layer.downto(1) do |layer|
+          ep = greedy_descend(query, ep, layer)
         end
 
         # Full beam search at layer 0.
@@ -178,7 +178,7 @@ module Vecstolite
 
         candidates
           .first(k)
-          .map { |c| AnnResult.new(c.id, 1.0_f32 - c.dist) } # convert dist back to similarity
+          .map { |candidate| AnnResult.new(candidate.id, 1.0_f32 - candidate.dist) } # convert dist back to similarity
       end
 
       def size : Int32
@@ -234,8 +234,8 @@ module Vecstolite
         entry_dist = distance(query, @nodes[entry].vector)
         seed = Candidate.new(entry, entry_dist)
 
-        candidates = BinaryHeap(Candidate).new { |a, b| a.dist <= b.dist }  # min-heap
-        dynamic_set = BinaryHeap(Candidate).new { |a, b| a.dist >= b.dist } # max-heap
+        candidates = BinaryHeap(Candidate).new { |this, that| this.dist <= that.dist }  # min-heap
+        dynamic_set = BinaryHeap(Candidate).new { |this, that| this.dist >= that.dist } # max-heap
 
         candidates.push(seed)
         dynamic_set.push(seed)
@@ -285,7 +285,7 @@ module Vecstolite
       ) : Array(Int32)
         neighbour_ids
           .map { |nb_id| {nb_id, distance(base_vec, @nodes[nb_id].vector)} }
-          .sort_by! { |_, d| d }
+          .sort_by! { |_, dist| dist }
           .first(m)
           .map { |nb_id, _| nb_id }
       end

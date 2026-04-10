@@ -104,12 +104,12 @@ module Vecstolite
         # the behaviour of EmbeddingBag with padding_idx.
         safe_id = id.clamp(0, @vocab_size - 1)
         row = @st.tensor_f32_row(TENSOR_NAME, safe_id)
-        dims.times { |d| sum[d] += row[d] }
+        dims.times { |dim| sum[dim] += row[dim] }
       end
 
       # Mean pool
       n = ids.size.to_f32
-      dims.times { |d| sum[d] /= n }
+      dims.times { |dim| sum[dim] /= n }
 
       # L2 normalise
       l2_normalize!(sum)

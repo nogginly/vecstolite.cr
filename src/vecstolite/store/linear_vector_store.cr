@@ -25,8 +25,8 @@ module Vecstolite
       query_vec = @embedder.embed(query)
 
       @entries
-        .map { |e| SearchResult.new(e.text, cosine_similarity(query_vec, e.vector)) }
-        .sort_by! { |r| -r.score }
+        .map { |entry| SearchResult.new(entry.text, cosine_similarity(query_vec, entry.vector)) }
+        .sort_by! { |result| -result.score }
         .first(k)
     end
 

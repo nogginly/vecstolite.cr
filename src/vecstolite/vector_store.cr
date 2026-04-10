@@ -16,7 +16,7 @@ module Vecstolite
 
     # Add multiple texts at once.
     def add_all(texts : Enumerable(String)) : Nil
-      texts.each { |t| add(t) }
+      texts.each { |text| add(text) }
     end
 
     # Search for `k` entries that are most similar to `query`

@@ -105,9 +105,9 @@ module Vecstolite
 
       # Strip non-spacing combining marks (Unicode category Mn) and lowercase
       result = String::Builder.new(nfd.bytesize)
-      nfd.each_char do |ch|
-        next if combining_mark?(ch) # skip combining marks (accents)
-        result << ch.downcase
+      nfd.each_char do |char|
+        next if combining_mark?(char) # skip combining marks (accents)
+        result << char.downcase
       end
       result.to_s
     end
@@ -124,20 +124,20 @@ module Vecstolite
       words = [] of String
       buf = String::Builder.new
 
-      text.each_char do |ch|
-        if ch.whitespace?
+      text.each_char do |char|
+        if char.whitespace?
           unless buf.empty?
             words << buf.to_s
             buf = String::Builder.new
           end
-        elsif punctuation?(ch)
+        elsif punctuation?(char)
           unless buf.empty?
             words << buf.to_s
             buf = String::Builder.new
           end
-          words << ch.to_s
+          words << char.to_s
         else
-          buf << ch
+          buf << char
         end
       end
 
@@ -208,10 +208,14 @@ module Vecstolite
     private def punctuation?(ch : Char) : Bool
       cp = ch.ord
       # ASCII punctuation ranges
-      return true if cp >= 33 && cp <= 47   # !"#$%&'()*+,-./
-      return true if cp >= 58 && cp <= 64   # :;<=>?@
-      return true if cp >= 91 && cp <= 96   # [\]^_`
-      return true if cp >= 123 && cp <= 126 # {|}~
+      return true if (cp >= 33 && cp <= 47) || # !"#$%&'()*+,-./
+                     (cp >= 58 && cp <= 64) || # :;<=>?@
+                     (cp >= 91 && cp <= 96) || # [\]^_`
+                     (cp >= 123 && cp <= 126)  # {|}~
+      not_ascii_punctuation?(ch)
+    end
+
+    private def not_ascii_punctuation?(ch : Char) : Bool
       # Unicode: anything in the P (punctuation) or S (symbol) general category.
       # Crystal's Char#mark? covers Mn/Mc/Me; we use the codepoint path above for
       # those.  For P and S we rely on the fact that non-ASCII punctuation and
