@@ -1,5 +1,6 @@
 require "../src/vecstolite"
 
+require "json"
 require "benchmark"
 
 USAGE = "Usage: benchmark <path_to_static_model_dir> <path_to_sentence_file>"
@@ -27,7 +28,9 @@ puts "### Add all (#{sentences.size} sentences)"
 
 vector_stores.each do |name, store|
   result = Benchmark.measure {
-    store.add_all(sentences.each)
+    sentences.each do |text|
+      store.add(text, extra: {hash: text.hash}.to_json)
+    end
   }
   puts "#{result}\t#{name}"
 end

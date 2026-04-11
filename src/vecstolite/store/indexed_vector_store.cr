@@ -17,10 +17,11 @@ module Vecstolite
       @index = HNSW::Index.new(dims: embedder.dimensions, m: m, ef_construction: ef_construction)
     end
 
-    def add(text : String) : Nil
+    # Add and index `text`, with optional `extra` data (not embedded or indexed)
+    def add(text : String, extra : String? = nil) : Nil
       vector = @embedder.embed(text)
       id = @entries.size
-      @entries << Entry.new(text, vector)
+      @entries << Entry.new(text, vector, extra)
       @index.add(id: id, vector: vector)
     end
 
@@ -30,7 +31,8 @@ module Vecstolite
 
       query_vec = @embedder.embed(query)
       @index.search(query_vec, k: k, ef: ef).map do |result|
-        SearchResult.new(@entries[result.id].text, result.score)
+        entry = @entries[result.id]
+        SearchResult.new(entry.text, result.score, entry.extra)
       end
     end
 

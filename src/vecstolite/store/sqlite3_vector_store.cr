@@ -98,7 +98,8 @@ module Vecstolite
     # Mutations
     # -------------------------------------------------------------------------
 
-    def add(text : String) : Nil
+    # Add and index `text`, with optional `extra` data (not embedded or indexed)
+    def add(text : String, extra : String? = nil) : Nil
       raise Error.new("Store is closed") if @closed
       raise Error.new("Store is readonly") if @readonly
 
@@ -106,16 +107,12 @@ module Vecstolite
       id = @entries.size
 
       @db.transaction do
-        @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector) VALUES (?, ?, ?)",
-          id, text, pack_vector(vector)
+        @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector, extra) VALUES (?, ?, ?, ?)",
+          id, text, pack_vector(vector), extra
       end
 
-      @entries << Entry.new(text, vector)
+      @entries << Entry.new(text, vector, extra)
       @index.add(id: id, vector: vector)
-    end
-
-    def add_all(texts : Enumerable(String)) : Nil
-      texts.each { |text| add(text) }
     end
 
     # Delete an entry by id.  Marks the row deleted in SQLite and rebuilds the
@@ -139,7 +136,8 @@ module Vecstolite
 
       query_vec = @embedder.embed(query)
       @index.search(query_vec, k: k, ef: ef).map do |result|
-        SearchResult.new(@entries[result.id].text, result.score)
+        entry = @entries[result.id]
+        SearchResult.new(entry.text, result.score, entry.extra)
       end
     end
 
@@ -194,6 +192,7 @@ module Vecstolite
         id        INTEGER PRIMARY KEY,
         text      TEXT    NOT NULL,
         vector    BLOB    NOT NULL,
+        extra     TEXT    DEFAULT NULL,
         deleted   INTEGER NOT NULL DEFAULT 0
       )
       SQL
@@ -238,13 +237,14 @@ module Vecstolite
     # Restore entries and HNSW index from the database.
     private def load_from_db(meta : Hash(String, Int32)) : Nil
       # Load non-deleted entries in ID order.
-      @db.query("SELECT id, text, vector FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |results|
+      @db.query("SELECT id, text, vector, extra FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |results|
         results.each do
           _id = results.read(Int32)
           text = results.read(String)
           blob = results.read(Bytes)
           vector = unpack_vector(blob)
-          @entries << Entry.new(text, vector)
+          extra = results.read(String)
+          @entries << Entry.new(text, vector, extra)
         end
       end
 

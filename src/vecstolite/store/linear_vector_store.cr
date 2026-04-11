@@ -12,10 +12,10 @@ module Vecstolite
       @entries = [] of Entry
     end
 
-    # Add `text` to the vector store. The embedding is computed once and cached.
-    def add(text : String) : Nil
+    # Add and index `text`, with optional `extra` data (not embedded or indexed)
+    def add(text : String, extra : String? = nil) : Nil
       vector = @embedder.embed(text)
-      @entries << Entry.new(text, vector)
+      @entries << Entry.new(text, vector, extra)
     end
 
     # Return the top-`k` entries most similar to `query`, sorted descending.
@@ -25,7 +25,7 @@ module Vecstolite
       query_vec = @embedder.embed(query)
 
       @entries
-        .map { |entry| SearchResult.new(entry.text, cosine_similarity(query_vec, entry.vector)) }
+        .map { |entry| SearchResult.new(entry.text, cosine_similarity(query_vec, entry.vector), entry.extra) }
         .sort_by! { |result| -result.score }
         .first(k)
     end

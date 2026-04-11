@@ -7,17 +7,13 @@ require "./vector_embedder"
 module Vecstolite
   module VectorStore
     # One stored item: the original text plus its embedding vector.
-    record Entry, text : String, vector : Embedding
+    record Entry, text : String, vector : Embedding, extra : String?
 
     # A single search result returned from VectorStore#search.
-    record SearchResult, text : String, score : Float32
+    record SearchResult, text : String, score : Float32, extra : String?
 
-    abstract def add(text : String) : Nil
-
-    # Add multiple texts at once.
-    def add_all(texts : Enumerable(String)) : Nil
-      texts.each { |text| add(text) }
-    end
+    # Add and index `text`, with optional `extra` data (not embedded or indexed)
+    abstract def add(text : String, extra : String? = nil) : Nil
 
     # Search for `k` entries that are most similar to `query`
     abstract def search(query : String, k : Int32 = 5) : Array(SearchResult)
