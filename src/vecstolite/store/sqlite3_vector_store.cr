@@ -41,16 +41,19 @@ module Vecstolite
       embedder : VectorEmbedder,
       m : Int32 = 16,
       ef_construction : Int32 = 200,
+      readonly = false,
     ) : SQLiteVectorStore
       db = DB.open("sqlite3://#{path}")
-      store = new(embedder, db, path, m, ef_construction)
+      store = new(embedder, db, path, m, ef_construction, readonly)
       store.bootstrap
       store
     end
 
     def close : Nil
       return if @closed
-      save_graph
+
+      save_graph unless @readonly
+
       @db.close
       @closed = true
     end
@@ -97,6 +100,7 @@ module Vecstolite
 
     def add(text : String) : Nil
       raise Error.new("Store is closed") if @closed
+      raise Error.new("Store is readonly") if @readonly
 
       vector = @embedder.embed(text)
       id = @entries.size
@@ -118,6 +122,7 @@ module Vecstolite
     # in-memory index from remaining entries (HNSW does not support deletion).
     def delete(id : Int32) : Nil
       raise Error.new("Store is closed") if @closed
+      raise Error.new("Store is readonly") if @readonly
       raise ArgumentError.new("id #{id} out of range") unless id < @entries.size
 
       @db.exec "UPDATE #{TABLE_ENTRIES} SET deleted = 1 WHERE id = ?", id
@@ -144,6 +149,7 @@ module Vecstolite
 
     # -------------------------------------------------------------------------
 
+    @readonly : Bool
     @db : DB::Database
     @path : String
     @entries : Array(Entry)
@@ -159,6 +165,7 @@ module Vecstolite
       @path : String,
       @m : Int32,
       @ef_construction : Int32,
+      @readonly,
     )
       @entries = [] of Entry
       @index = new_index
@@ -167,13 +174,14 @@ module Vecstolite
 
     # Create schema if needed, then load existing data.
     protected def bootstrap : Nil
-      # WAL journaling and FULL sync are enabled to ensure durability,
-      # especially since we write the index at the end.
-      @db.exec "PRAGMA journal_mode = WAL"
-      @db.exec "PRAGMA synchronous  = FULL"
-      @db.exec "PRAGMA foreign_keys = ON"
+      unless @readonly
+        # WAL journaling and FULL sync are enabled to ensure durability,
+        # especially since we write the index at the end.
+        @db.exec "PRAGMA journal_mode = WAL"
+        @db.exec "PRAGMA synchronous  = FULL"
+        @db.exec "PRAGMA foreign_keys = ON"
 
-      @db.exec <<-SQL
+        @db.exec <<-SQL
       CREATE TABLE IF NOT EXISTS #{TABLE_META} (
         key   TEXT    PRIMARY KEY,
         value INTEGER NOT NULL,
@@ -181,7 +189,7 @@ module Vecstolite
       )
       SQL
 
-      @db.exec <<-SQL
+        @db.exec <<-SQL
       CREATE TABLE IF NOT EXISTS #{TABLE_ENTRIES} (
         id        INTEGER PRIMARY KEY,
         text      TEXT    NOT NULL,
@@ -190,14 +198,14 @@ module Vecstolite
       )
       SQL
 
-      @db.exec <<-SQL
+        @db.exec <<-SQL
       CREATE TABLE IF NOT EXISTS #{TABLE_GRAPH_NODES} (
         id          INTEGER PRIMARY KEY,
         layer_count INTEGER NOT NULL
       )
       SQL
 
-      @db.exec <<-SQL
+        @db.exec <<-SQL
       CREATE TABLE IF NOT EXISTS #{TABLE_GRAPH_EDGES} (
         node_id      INTEGER NOT NULL,
         layer        INTEGER NOT NULL,
@@ -205,17 +213,18 @@ module Vecstolite
       )
       SQL
 
-      @db.exec "CREATE INDEX IF NOT EXISTS #{INDEX_EDGES} ON #{TABLE_GRAPH_EDGES} (node_id, layer)"
+        @db.exec "CREATE INDEX IF NOT EXISTS #{INDEX_EDGES} ON #{TABLE_GRAPH_EDGES} (node_id, layer)"
 
-      # Write schema version if this is a fresh database.
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('schema_version', ?, NULL)", SCHEMA_VERSION
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('m',              ?, NULL)", @m
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('ef_construction',?, NULL)", @ef_construction
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('graph_saved',    ?, NULL)", 0
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('entry_point',    ?, NULL)", -1
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('max_layer',      ?, NULL)", -1
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('dimensions',      ?, NULL)", @embedder.dimensions
-      @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('embedder',      1, ?)", @embedder.model_name
+        # Write schema version if this is a fresh database.
+        @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('schema_version', ?, NULL)", SCHEMA_VERSION
+        @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('m',              ?, NULL)", @m
+        @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('ef_construction',?, NULL)", @ef_construction
+        @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('graph_saved',    ?, NULL)", 0
+        @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('entry_point',    ?, NULL)", -1
+        @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('max_layer',      ?, NULL)", -1
+        @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('dimensions',      ?, NULL)", @embedder.dimensions
+        @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('embedder',      1, ?)", @embedder.model_name
+      end
 
       # Read back params (may differ from constructor args if db already existed).
       meta = read_meta
