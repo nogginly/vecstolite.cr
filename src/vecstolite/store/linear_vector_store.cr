@@ -28,7 +28,7 @@ module Vecstolite
     end
 
     # Return the top-`k` entries most similar to `query`, sorted descending.
-    def search(query : String, k : Int32 = 5) : Array(SearchResult)
+    def search(query : String, k : Int32 = DEFAULT_K) : Array(SearchResult)
       return [] of SearchResult if @entries.empty?
 
       query_vec = @embedder.embed(query)

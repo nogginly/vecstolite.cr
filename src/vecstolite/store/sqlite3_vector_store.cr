@@ -31,6 +31,10 @@ module Vecstolite
 
     SCHEMA_VERSION = 1
 
+    DEFAULT_M               =  16
+    DEFAULT_EF_CONSTRUCTION = 200
+    DEFAULT_EF_SEARCH       =  50
+
     # Open an existing SQLite-backed vector store at `path`.
     def self.open(
       path : String,
@@ -48,7 +52,10 @@ module Vecstolite
     # Create a SQLite-backed vector store at `path`; specify `m` and `ef_construction` to
     # control the number of max neighbours per node per layer and
     # beam width when inserting a new node distibution respectively.
-    def self.create(path : String, embedder : VectorEmbedder, m : Int32 = 16, ef_construction : Int32 = 200) : SQLiteVectorStore
+    def self.create(path : String,
+                    embedder : VectorEmbedder,
+                    m = DEFAULT_M,
+                    ef_construction = DEFAULT_EF_CONSTRUCTION) : SQLiteVectorStore
       raise Error.new("Database '#{path}' already exists.") if File.exists?(path)
 
       db = DB.open("sqlite3://#{path}")
@@ -68,7 +75,7 @@ module Vecstolite
     end
 
     def clear : Nil
-      raise Error.new("Clearing SQLiteVectoreStore not yet supported.")
+      raise Error.new("Clearing SQLiteVectorStore not yet supported.")
     end
 
     private TABLE_GRAPH_NODES = "vecsto_graph_nodes"
@@ -139,12 +146,12 @@ module Vecstolite
     # Queries
     # -------------------------------------------------------------------------
 
-    def search(query : String, k : Int32 = 5, ef : Int32 = 50) : Array(SearchResult)
+    def search(query : String, k : Int32 = DEFAULT_K, ef_search : Int32 = DEFAULT_EF_SEARCH) : Array(SearchResult)
       raise Error.new("Store is closed") if @closed
       return [] of SearchResult if @entries.empty?
 
       query_vec = @embedder.embed(query)
-      @index.search(query_vec, k: k, ef: ef).map do |result|
+      @index.search(query_vec, k: k, ef: ef_search).map do |result|
         entry = @entries[result.id]
         SearchResult.new(entry.text, result.score, entry.extra)
       end
@@ -166,15 +173,18 @@ module Vecstolite
     @m : Int32
     @ef_construction : Int32
 
-    private def initialize(
-      @embedder : VectorEmbedder,
-      @db : DB::Database,
-      @path : String,
-      @m : Int32,
-      @ef_construction : Int32,
-      @readonly,
-    )
+    private def initialize(@embedder : VectorEmbedder, @db : DB::Database, @path : String,
+                           @m : Int32, @ef_construction : Int32, @readonly)
       @entries = [] of Entry
+      @index = new_index
+      @closed = false
+    end
+
+    private def initialize(@embedder : VectorEmbedder, @db : DB::Database,
+                           @path : String, @readonly)
+      @entries = [] of Entry
+      @m = DEFAULT_M
+      @ef_construction = DEFAULT_EF_CONSTRUCTION
       @index = new_index
       @closed = false
     end

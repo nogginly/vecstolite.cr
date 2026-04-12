@@ -15,6 +15,10 @@ module Vecstolite
   class IndexedVectorStore
     include VectorStore
 
+    DEFAULT_M               =  16
+    DEFAULT_EF_CONSTRUCTION = 200
+    DEFAULT_EF_SEARCH       =  50
+
     @entries : Array(Entry)
     @embedder : VectorEmbedder
     @index : HNSW::Index
@@ -22,7 +26,7 @@ module Vecstolite
     # Create an in-memory index vector store; specify `m` and `ef_construction` to
     # control the number of max neighbours per node per layer and
     # beam width when inserting a new node distibution respectively.
-    def initialize(@embedder, m : Int32 = 16, ef_construction : Int32 = 200)
+    def initialize(@embedder, m : Int32 = DEFAULT_M, ef_construction : Int32 = DEFAULT_EF_CONSTRUCTION)
       @entries = [] of Entry
       @index = HNSW::Index.new(dims: embedder.dimensions, m: m, ef_construction: ef_construction)
     end
@@ -36,7 +40,7 @@ module Vecstolite
 
     # :inherit:
     # Adjust `ef` to trade speed (lower) for recall (higher).
-    def search(query : String, k : Int32 = 5, ef : Int32 = 50) : Array(SearchResult)
+    def search(query : String, k : Int32 = DEFAULT_K, ef : Int32 = DEFAULT_EF_SEARCH) : Array(SearchResult)
       return [] of SearchResult if @entries.empty?
 
       query_vec = @embedder.embed(query)
