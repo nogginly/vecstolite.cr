@@ -1,6 +1,6 @@
 # Vecstolite
 
-A vector store _shard_ for Crystal with in-memory and (coming soon) file-based storage support.
+A vector store _shard_ for Crystal with in-memory and SQLite3-backed storage support.
 
 ## Installation
 

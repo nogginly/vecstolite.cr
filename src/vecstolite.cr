@@ -1,9 +1,24 @@
 require "./vecstolite/embedder/*"
 require "./vecstolite/store/*"
 
-# Vector emmbedding-based in-memory and file (coming soon) storage.
+# **Vecstolite** is a vector store _shard_ for Crystal with in-memory and SQLite3-backed storage support.
+#
+# Different kinds of vector stores are available:
+#
+# - `LinearVectorStore`
+# - `IndexedVectorStore`
+# - `SQLiteVectorStore`
+#
+# The following types of vector embedders are available:
+#
+# - `StaticEmbedder`
+# - `OpenAIEmbedder`
+# - `LexicalEmbedder` (for testing)
+#
 module Vecstolite
-  # Read this at compile time from shard.yml one day
-  VERSION    = {{ `shards version #{__DIR__}`.chomp.stringify }}
-  PRERELEASE = VERSION.match(/^\d+\.\d+\.\d+$/).nil?
+  # :nodoc:
+  module Version
+    VERSION    = {{ `shards version #{__DIR__}`.chomp.stringify }}
+    PRERELEASE = VERSION.match(/^\d+\.\d+\.\d+$/).nil?
+  end
 end

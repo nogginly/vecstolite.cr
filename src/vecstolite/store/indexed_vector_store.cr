@@ -3,8 +3,15 @@ require "../indexer/hnsw_indexer"
 require "../vector_store"
 
 module Vecstolite
-  # An implementation of VectorStore that maintains both the entry array
-  # and the HNSW index.
+  # An in-memory vector store with an HNSW index.
+  #
+  # Usage:
+  # ```
+  # store = Vecstolite::IndexedVectorStore.new(embedder)
+  # store.add("The sky is blue.")
+  # store.add("Crystal is fast.")
+  # results = store.search("colour of the sky", k: 3)
+  # ```
   class IndexedVectorStore
     include VectorStore
 
@@ -12,12 +19,14 @@ module Vecstolite
     @embedder : VectorEmbedder
     @index : HNSW::Index
 
+    # Create an in-memory index vector store; specify `m` and `ef_construction` to
+    # control the number of max neighbours per node per layer and
+    # beam width when inserting a new node distibution respectively.
     def initialize(@embedder, m : Int32 = 16, ef_construction : Int32 = 200)
       @entries = [] of Entry
       @index = HNSW::Index.new(dims: embedder.dimensions, m: m, ef_construction: ef_construction)
     end
 
-    # Add and index `text`, with optional `extra` data (not embedded or indexed)
     def add(text : String, extra : String? = nil) : Nil
       vector = @embedder.embed(text)
       id = @entries.size
@@ -25,7 +34,8 @@ module Vecstolite
       @index.add(id: id, vector: vector)
     end
 
-    # *ef* can be raised at query time to trade speed for recall.
+    # :inherit:
+    # Adjust `ef` to trade speed (lower) for recall (higher).
     def search(query : String, k : Int32 = 5, ef : Int32 = 50) : Array(SearchResult)
       return [] of SearchResult if @entries.empty?
 

@@ -11,6 +11,7 @@
 #   peek         O(1)     — returns root without removing
 #   size / empty?
 module Vecstolite
+  # :nodoc:
   class BinaryHeap(T)
     @data : Array(T)
     @cmp : Proc(T, T, Bool)

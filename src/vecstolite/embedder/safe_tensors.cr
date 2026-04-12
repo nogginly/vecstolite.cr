@@ -20,6 +20,7 @@ require "json"
 # data_offsets are relative to the start of the data block (i.e. byte 8 +
 # header_len), NOT to the start of the file.
 module Vecstolite
+  # :nodoc:
   module SafeTensors
     class Error < Exception; end
 

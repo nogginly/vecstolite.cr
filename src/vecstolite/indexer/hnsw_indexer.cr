@@ -1,35 +1,35 @@
 require "./binary_heap"
 require "../vector_embedder"
 
-# Hierarchical Navigable Small World (HNSW) approximate nearest neighbour index.
-# Drop-in companion to vector_store.cr — use Index when your store exceeds
-# ~50k entries and linear scan latency becomes a problem.
-#
-# Usage:
-#   index = Index.new(dims: 1536)
-#   index.add(id: 0, vector: vec0)
-#   index.add(id: 1, vector: vec1)
-#   results = index.search(query_vec, k: 5)
-#   results.each { |r| puts "id=#{r.id}  score=#{r.score.round(4)}" }
-#
-# The index stores integer IDs only — map them back to your Entry objects in
-# VectorStore via a simple Array or Hash.
-
-# ---------------------------------------------------------------------------
-# Tuning knobs
-# ---------------------------------------------------------------------------
-#
-# M              — max neighbours per node per layer (default 16).
-#                  Higher → better recall, ~M² memory per node, slower inserts.
-# EF_CONSTRUCTION — beam width when inserting a new node (default 200).
-#                  Higher → better graph quality, slower inserts.
-# EF_SEARCH       — beam width during queries (default 50, override at call site).
-#                  Higher → better recall, slower queries.
-#
-# Practical starting point for 1536-dim embeddings:
-#   M=16, ef_construction=200, ef_search=50 → ~95% recall at ~1ms/query (100k entries)
-#   M=32, ef_construction=400, ef_search=100 → ~99% recall at ~3ms/query
 module Vecstolite
+  # :nodoc:
+  # Hierarchical Navigable Small World (HNSW) approximate nearest neighbour index.
+  # Drop-in companion to vector_store.cr — use Index when your store exceeds
+  # ~50k entries and linear scan latency becomes a problem.
+  #
+  # Usage:
+  #   index = Index.new(dims: 1536)
+  #   index.add(id: 0, vector: vec0)
+  #   index.add(id: 1, vector: vec1)
+  #   results = index.search(query_vec, k: 5)
+  #   results.each { |r| puts "id=#{r.id}  score=#{r.score.round(4)}" }
+  #
+  # The index stores integer IDs only — map them back to your Entry objects in
+  # VectorStore via a simple Array or Hash.
+  # ---------------------------------------------------------------------------
+  # Tuning knobs
+  # ---------------------------------------------------------------------------
+  #
+  # M              — max neighbours per node per layer (default 16).
+  #                  Higher → better recall, ~M² memory per node, slower inserts.
+  # EF_CONSTRUCTION — beam width when inserting a new node (default 200).
+  #                  Higher → better graph quality, slower inserts.
+  # EF_SEARCH       — beam width during queries (default 50, override at call site).
+  #                  Higher → better recall, slower queries.
+  #
+  # Practical starting point for 1536-dim embeddings:
+  #   M=16, ef_construction=200, ef_search=50 → ~95% recall at ~1ms/query (100k entries)
+  #   M=32, ef_construction=400, ef_search=100 → ~99% recall at ~3ms/query
   module HNSW
     # One candidate in the greedy search beam — tracked in a max-heap by distance.
     private struct Candidate

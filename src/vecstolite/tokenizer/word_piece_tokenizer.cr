@@ -15,6 +15,7 @@ require "json"
 # The tokenizer is loaded from a standard HuggingFace tokenizer.json file.
 
 module Vecstolite
+  # :nodoc:
   class WordPieceTokenizer
     class Error < Exception; end
 

@@ -1,6 +1,15 @@
 require "../vector_store"
 
 module Vecstolite
+  # An in-memory vector store with linear search .
+  #
+  # Usage:
+  # ```
+  # store = Vecstolite::LinearVectorStore.new(embedder)
+  # store.add("The sky is blue.")
+  # store.add("Crystal is fast.")
+  # results = store.search("colour of the sky", k: 3)
+  # ```
   class LinearVectorStore
     include VectorStore
 
