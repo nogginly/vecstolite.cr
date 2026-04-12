@@ -17,10 +17,10 @@ File.delete("tmp_bench_m8.db") if File.exists?("tmp_bench_m8.db")
 vector_stores = {
   "SQLite3(M=16, EF=200)" => Vecstolite::SQLiteVectorStore.create("tmp_bench_m16.db", embedder, m: 16, ef_construction: 200),
   "SQLite3(M=8, EF=200)"  => Vecstolite::SQLiteVectorStore.create("tmp_bench_m8.db", embedder, m: 8, ef_construction: 200),
-  "Indexed(M=16, EF=200)" => Vecstolite::IndexedVectorStore.new(embedder, m: 16, ef_construction: 200),
-  "Indexed(M=8, EF=200)"  => Vecstolite::IndexedVectorStore.new(embedder, m: 8, ef_construction: 200),
-  "Indexed(M=16, EF=100)" => Vecstolite::IndexedVectorStore.new(embedder, m: 16, ef_construction: 100),
-  "Indexed(M=8, EF=100)"  => Vecstolite::IndexedVectorStore.new(embedder, m: 8, ef_construction: 100),
+  "Indexed(M=16, EF=200)" => Vecstolite::MemoryVectorStore.new(embedder, m: 16, ef_construction: 200),
+  "Indexed(M=8, EF=200)"  => Vecstolite::MemoryVectorStore.new(embedder, m: 8, ef_construction: 200),
+  "Indexed(M=16, EF=100)" => Vecstolite::MemoryVectorStore.new(embedder, m: 16, ef_construction: 100),
+  "Indexed(M=8, EF=100)"  => Vecstolite::MemoryVectorStore.new(embedder, m: 8, ef_construction: 100),
   "Linear"                => Vecstolite::LinearVectorStore.new(embedder),
 }
 

@@ -25,15 +25,11 @@ module Vecstolite
   # ```
   #
   class SQLiteVectorStore
-    include VectorStore
+    include IndexedVectorStore
 
     class Error < Exception; end
 
     SCHEMA_VERSION = 1
-
-    DEFAULT_M               =  16
-    DEFAULT_EF_CONSTRUCTION = 200
-    DEFAULT_EF_SEARCH       =  50
 
     # Open an existing SQLite-backed vector store at `path`.
     def self.open(

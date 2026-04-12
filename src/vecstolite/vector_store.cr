@@ -5,6 +5,7 @@ require "./vector_embedder"
 # ---------------------------------------------------------------------------
 
 module Vecstolite
+  # Base definition for a vector store
   module VectorStore
     DEFAULT_K = 5
 

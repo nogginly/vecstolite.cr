@@ -4,7 +4,7 @@ model_dir = ARGV[0]? || abort("Usage: crystal run test01.cr -- <path_to_model_di
 
 embedder = Vecstolite::StaticEmbedder.load(model_dir)
 
-store = Vecstolite::IndexedVectorStore.new(embedder)
+store = Vecstolite::MemoryVectorStore.new(embedder)
 
 [
   "The sky is blue during a clear day.",

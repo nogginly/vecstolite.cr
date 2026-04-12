@@ -6,7 +6,7 @@ embedder = Vecstolite::OpenAIEmbedder.new(
   model: "nomic-embed-text-v2-moe",
   base_url: "http://localhost:11434",
 )
-store = Vecstolite::IndexedVectorStore.new(embedder)
+store = Vecstolite::MemoryVectorStore.new(embedder)
 
 [
   "The sky is blue during a clear day.",

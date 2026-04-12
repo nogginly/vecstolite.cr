@@ -2,7 +2,7 @@ require "json"
 require "../src/vecstolite"
 
 embedder = Vecstolite::LexicalEmbedder.new
-store = Vecstolite::IndexedVectorStore.new(embedder)
+store = Vecstolite::MemoryVectorStore.new(embedder)
 
 [
   "The sky is blue during a clear day.",
