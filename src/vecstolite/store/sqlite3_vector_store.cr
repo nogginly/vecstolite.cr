@@ -3,25 +3,27 @@ require "sqlite3"
 require "../vector_store"
 require "../indexer/*"
 
-# A SQLite-backed vector store with an in-memory HNSW index.
-#
-# Design:
-#   - Entries (text + vector) are written to SQLite on every `add`.
-#   - The HNSW graph lives in memory for fast queries.
-#   - Graph topology is flushed to SQLite via `save_graph` (or `close`),
-#     so a full rebuild from disk is possible at any time.
-#   - On `open`, entries are read from SQLite and the HNSW index is
-#     reconstructed — either from stored graph edges (fast) or by
-#     re-inserting all vectors (fallback if no graph is saved yet).
-#
-# Usage:
-#   store = Vecstolite::SQLiteVectorStore.open("store.db")
-#   store.add("The sky is blue.")
-#   store.add("Crystal is fast.")
-#   results = store.search("colour of the sky", k: 3)
-#   store.close   # flushes graph to SQLite
-#
 module Vecstolite
+  # A SQLite-backed vector store with an in-memory HNSW index.
+  #
+  # Design:
+  #   - Entries (text + vector) are written to SQLite on every `add`.
+  #   - The HNSW graph lives in memory for fast queries.
+  #   - Graph topology is flushed to SQLite via `save_graph` (or `close`),
+  #     so a full rebuild from disk is possible at any time.
+  #   - On `open`, entries are read from SQLite and the HNSW index is
+  #     reconstructed — either from stored graph edges (fast) or by
+  #     re-inserting all vectors (fallback if no graph is saved yet).
+  #
+  # Usage:
+  # ```
+  # store = Vecstolite::SQLiteVectorStore.create("store.db")
+  # store.add("The sky is blue.")
+  # store.add("Crystal is fast.")
+  # results = store.search("colour of the sky", k: 3)
+  # store.close # flushes graph to SQLite
+  # ```
+  #
   class SQLiteVectorStore
     include VectorStore
 
@@ -29,26 +31,33 @@ module Vecstolite
 
     SCHEMA_VERSION = 1
 
-    # -------------------------------------------------------------------------
-    # Open / close
-    # -------------------------------------------------------------------------
-
-    # Open (or create) a store at *path*.
-    # Pass *m* and *ef_construction* only when creating a new store;
-    # they are ignored if the database already exists.
+    # Open an existing SQLite-backed vector store at `path`.
     def self.open(
       path : String,
       embedder : VectorEmbedder,
-      m : Int32 = 16,
-      ef_construction : Int32 = 200,
       readonly = false,
     ) : SQLiteVectorStore
+      raise Error.new("Database '#{path}' does not exist.") unless File.exists?(path)
+
       db = DB.open("sqlite3://#{path}")
-      store = new(embedder, db, path, m, ef_construction, readonly)
+      store = new(embedder, db, path, readonly: readonly)
       store.bootstrap
       store
     end
 
+    # Create a SQLite-backed vector store at `path`; specify `m` and `ef_construction` to
+    # control the number of max neighbours per node per layer and
+    # beam width when inserting a new node distibution respectively.
+    def self.create(path : String, embedder : VectorEmbedder, m : Int32 = 16, ef_construction : Int32 = 200) : SQLiteVectorStore
+      raise Error.new("Database '#{path}' already exists.") if File.exists?(path)
+
+      db = DB.open("sqlite3://#{path}")
+      store = new(embedder, db, path, m, ef_construction, readonly: false)
+      store.bootstrap
+      store
+    end
+
+    # Flush and close the backing database.
     def close : Nil
       return if @closed
 
@@ -62,11 +71,11 @@ module Vecstolite
       raise Error.new("Clearing SQLiteVectoreStore not yet supported.")
     end
 
-    TABLE_GRAPH_NODES = "vecsto_graph_nodes"
-    TABLE_GRAPH_EDGES = "vecsto_graph_edges"
-    TABLE_META        = "vecsto_meta"
-    TABLE_ENTRIES     = "vecsto_entries"
-    INDEX_EDGES       = "vecsto_idx_edges"
+    private TABLE_GRAPH_NODES = "vecsto_graph_nodes"
+    private TABLE_GRAPH_EDGES = "vecsto_graph_edges"
+    private TABLE_META        = "vecsto_meta"
+    private TABLE_ENTRIES     = "vecsto_entries"
+    private INDEX_EDGES       = "vecsto_idx_edges"
 
     # Flush the in-memory HNSW graph topology to SQLite.
     # Call this explicitly if you want a durable checkpoint without closing.
