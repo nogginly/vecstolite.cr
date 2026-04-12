@@ -11,17 +11,17 @@ sentences = File.read_lines(text_file)
 
 embedder = Vecstolite::StaticEmbedder.load(model_dir)
 
-File.delete("demo_m16.db") if File.exists?("demo_m16.db")
-File.delete("demo_m8.db") if File.exists?("demo_m8.db")
+File.delete("tmp_bench_m16.db") if File.exists?("tmp_bench_m16.db")
+File.delete("tmp_bench_m8.db") if File.exists?("tmp_bench_m8.db")
 
 vector_stores = {
-  "SQLite3(M=16, EF=200)" => Vecstolite::SQLiteVectorStore.open("tmp_bench_m16.db", embedder, m: 16, ef_construction: 200),
-  "SQLite3(M=8, EF=200)"  => Vecstolite::SQLiteVectorStore.open("tmp_bench_m8.db", embedder, m: 8, ef_construction: 200),
+  "SQLite3(M=16, EF=200)" => Vecstolite::SQLiteVectorStore.create("tmp_bench_m16.db", embedder, m: 16, ef_construction: 200),
+  "SQLite3(M=8, EF=200)"  => Vecstolite::SQLiteVectorStore.create("tmp_bench_m8.db", embedder, m: 8, ef_construction: 200),
   "Indexed(M=16, EF=200)" => Vecstolite::IndexedVectorStore.new(embedder, m: 16, ef_construction: 200),
   "Indexed(M=8, EF=200)"  => Vecstolite::IndexedVectorStore.new(embedder, m: 8, ef_construction: 200),
   "Indexed(M=16, EF=100)" => Vecstolite::IndexedVectorStore.new(embedder, m: 16, ef_construction: 100),
   "Indexed(M=8, EF=100)"  => Vecstolite::IndexedVectorStore.new(embedder, m: 8, ef_construction: 100),
-  "Simple"                => Vecstolite::LinearVectorStore.new(embedder),
+  "Linear"                => Vecstolite::LinearVectorStore.new(embedder),
 }
 
 puts "### Add all (#{sentences.size} sentences)"
