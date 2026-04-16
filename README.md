@@ -57,15 +57,17 @@ Here's a snippet to create an in-memory indexed vector store:
 
 ```cr
 # Created an indexed in-memory vector store
-store = Vecstolite::IndexedVectorStore.new(embedder)
+store = Vecstolite::MemoryVectorStore.new(embedder)
 ```
 
 Alternatively, here's a snippet to create a persistent indexed vector store backed by SQLite3:
 
 ```cr
 # Created an indexed in-memory vector store
-store = Vecstolite::SQLiteVectorStore.open("my_vector_store.db", embedder)
+store = Vecstolite::SQLiteVectorStore.create("my_vector_store.db", embedder)
 ```
+
+If one exists, use the `#open` method instead.
 
 ### Adding text
 
