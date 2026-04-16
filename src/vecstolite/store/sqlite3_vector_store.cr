@@ -174,7 +174,7 @@ module Vecstolite
     end
 
     private def get_entry(id) : Entry
-      @entry_cache.get(id) do |id|
+      @entry_cache.get(id) do
         retrieve_entry(id)
       end
     end
