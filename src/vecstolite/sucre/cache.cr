@@ -79,10 +79,10 @@ class Cache(K, V)
   # block to compute the value, caches it, and returns the result.
   #
   # @param id [K] the key
-  # @yield [id] compute the value if missing
+  # @yield compute the value if missing
   # @return [V] the cached or freshly computed value
   def get(id : K, &) : V
-    get?(id) || put(id, yield id)
+    get?(id) || put(id, yield)
   end
 
   # Number of entries stored in the cache.
