@@ -2,6 +2,7 @@ require "sqlite3"
 
 require "../vector_store"
 require "../indexer/*"
+require "../sucre/cache"
 
 module Vecstolite
   # A SQLite-backed vector store with an in-memory HNSW index.
@@ -14,6 +15,8 @@ module Vecstolite
   #   - On `open`, entries are read from SQLite and the HNSW index is
   #     reconstructed — either from stored graph edges (fast) or by
   #     re-inserting all vectors (fallback if no graph is saved yet).
+  #   - When opening and reading an existing DB, search results are retrieved
+  #     from the DB unless already in the entry cache
   #
   # Usage:
   # ```
@@ -31,16 +34,20 @@ module Vecstolite
 
     SCHEMA_VERSION = 1
 
-    # Open an existing SQLite-backed vector store at `path`.
-    def self.open(
-      path : String,
-      embedder : VectorEmbedder,
-      readonly = false,
-    ) : SQLiteVectorStore
+    # Open an existing SQLite-backed vector store at `path`. Optionally, open it as `readonly`, and set
+    # a TTL for cache entries, and set a cache purge duration period
+    def self.open(path : String,
+                  embedder : VectorEmbedder,
+                  readonly = false,
+                  cache_ttl : Time::Span? = nil,
+                  cache_purge_period : Time::Span? = nil,) : SQLiteVectorStore
       raise Error.new("Database '#{path}' does not exist.") unless File.exists?(path)
 
       db = DB.open("sqlite3://#{path}")
-      store = new(embedder, db, path, readonly: readonly)
+      store = new(embedder, db, path,
+        readonly: readonly,
+        cache_ttl: cache_ttl,
+        cache_purge_period: cache_purge_period)
       store.bootstrap
       store
     end
@@ -51,11 +58,16 @@ module Vecstolite
     def self.create(path : String,
                     embedder : VectorEmbedder,
                     m = DEFAULT_M,
-                    ef_construction = DEFAULT_EF_CONSTRUCTION) : SQLiteVectorStore
+                    ef_construction = DEFAULT_EF_CONSTRUCTION,
+                    cache_ttl : Time::Span? = nil,
+                    cache_purge_period : Time::Span? = nil) : SQLiteVectorStore
       raise Error.new("Database '#{path}' already exists.") if File.exists?(path)
 
       db = DB.open("sqlite3://#{path}")
-      store = new(embedder, db, path, m, ef_construction, readonly: false)
+      store = new(embedder, db, path, m, ef_construction,
+        readonly: false,
+        cache_ttl: cache_ttl,
+        cache_purge_period: cache_purge_period)
       store.bootstrap
       store
     end
@@ -106,6 +118,14 @@ module Vecstolite
       end
     end
 
+    # Returns stats `NamedTuple` with following entried:
+    # - No. of `embeddings` (total)
+    # - No. of `indexed_nodes` (should match `embeddings`)
+    # - No. of `cached` entries (may be less when opening a DB)
+    def stats : NamedTuple
+      {cached: @entry_cache.size, embeddings: @entry_embeddings.size, indexed_nodes: @index.size}
+    end
+
     # -------------------------------------------------------------------------
     # Mutations
     # -------------------------------------------------------------------------
@@ -115,27 +135,20 @@ module Vecstolite
       raise Error.new("Store is closed") if @closed
       raise Error.new("Store is readonly") if @readonly
 
+      purge_expired_from_cache # For now; ideally this happens on a schedule
+
       vector = @embedder.embed(text)
-      id = @entries.size
+      id = @entry_embeddings.size
 
       @db.transaction do
         @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector, extra) VALUES (?, ?, ?, ?)",
           id, text, pack_vector(vector), extra
       end
 
-      @entries << Entry.new(text, vector, extra)
+      @entry_cache.put(id, Entry.new(text, vector, extra))
+      @entry_embeddings << EntryVector.new(vector)
+
       @index.add(id: id, vector: vector)
-    end
-
-    # Delete an entry by id.  Marks the row deleted in SQLite and rebuilds the
-    # in-memory index from remaining entries (HNSW does not support deletion).
-    def delete(id : Int32) : Nil
-      raise Error.new("Store is closed") if @closed
-      raise Error.new("Store is readonly") if @readonly
-      raise ArgumentError.new("id #{id} out of range") unless id < @entries.size
-
-      @db.exec "UPDATE #{TABLE_ENTRIES} SET deleted = 1 WHERE id = ?", id
-      rebuild_index
     end
 
     # -------------------------------------------------------------------------
@@ -144,41 +157,91 @@ module Vecstolite
 
     def search(query : String, k : Int32 = DEFAULT_K, ef_search : Int32 = DEFAULT_EF_SEARCH) : Array(SearchResult)
       raise Error.new("Store is closed") if @closed
-      return [] of SearchResult if @entries.empty?
+
+      return [] of SearchResult if @entry_embeddings.empty?
+
+      purge_expired_from_cache # For now; ideally this happens on a schedule
 
       query_vec = @embedder.embed(query)
       @index.search(query_vec, k: k, ef: ef_search).map do |result|
-        entry = @entries[result.id]
+        entry = get_entry(result.id)
         SearchResult.new(entry.text, result.score, entry.extra)
       end
     end
 
     def size : Int32
-      @entries.size
+      @entry_cache.size
+    end
+
+    private def get_entry(id) : Entry
+      @entry_cache.get(id) do |id|
+        retrieve_entry(id)
+      end
+    end
+
+    # Retrieve an Entry from the DB and put it into the cache
+    private def retrieve_entry(id : Int32) : Entry
+      entry = nil
+      @db.transaction do
+        @db.query("SELECT id, text, extra FROM #{TABLE_ENTRIES} WHERE id = ? AND deleted = 0 ORDER BY id", id) do |results|
+          results.each do
+            entry_id = results.read(Int32)
+            text = results.read(String)
+            extra = results.read(String)
+            entry = Entry.new(text, @entry_embeddings[entry_id].vector, extra)
+          end
+        end
+      end
+      entry || raise Error.new("Unexpected error fetching entry (id = #{id}) from DB.")
+    end
+
+    # Purge expired cached entries, but only if its past the `cache_purge_period` since
+    # last purge.
+    def purge_expired_from_cache
+      if purge_delay = @cache_purge_period
+        if (now = Time.instant) - @cache_last_purged > purge_delay
+          @cache_last_purged = now
+          puts "purging..."
+          @entry_cache.purge_expired
+        end
+      end
     end
 
     # -------------------------------------------------------------------------
 
+    # A minimal representation of an item in a vector store: the embedding vector only; the index is the ID.
+    record EntryVector, vector : Embedding
+
     @readonly : Bool
     @db : DB::Database
     @path : String
-    @entries : Array(Entry)
+    @entry_embeddings : Array(EntryVector)
     @embedder : VectorEmbedder
     @index : HNSW::Index
     @closed : Bool
     @m : Int32
     @ef_construction : Int32
 
+    @entry_cache : Cache(Int32, Entry)
+    @cache_last_purged = Time.instant
+    @cache_purge_period : Time::Span?
+
     private def initialize(@embedder : VectorEmbedder, @db : DB::Database, @path : String,
-                           @m : Int32, @ef_construction : Int32, @readonly)
-      @entries = [] of Entry
+                           @m : Int32, @ef_construction : Int32, @readonly,
+                           cache_ttl : Time::Span? = nil,
+                           @cache_purge_period : Time::Span? = nil)
+      @entry_cache = Cache(Int32, Entry).new(cache_ttl)
+      @entry_embeddings = [] of EntryVector
       @index = new_index
       @closed = false
     end
 
     private def initialize(@embedder : VectorEmbedder, @db : DB::Database,
-                           @path : String, @readonly)
-      @entries = [] of Entry
+                           @path : String, @readonly,
+                           cache_ttl : Time::Span? = nil,
+                           @cache_purge_period : Time::Span? = nil)
+      @entry_cache = Cache(Int32, Entry).new(cache_ttl)
+      @entry_embeddings = [] of EntryVector
       @m = DEFAULT_M
       @ef_construction = DEFAULT_EF_CONSTRUCTION
       @index = new_index
@@ -251,19 +314,15 @@ module Vecstolite
 
     # Restore entries and HNSW index from the database.
     private def load_from_db(meta : Hash(String, Int32)) : Nil
-      # Load non-deleted entries in ID order.
-      @db.query("SELECT id, text, vector, extra FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |results|
+      # Load non-deleted entry vectors in ID order.
+      @db.query("SELECT vector FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |results|
         results.each do
-          _id = results.read(Int32)
-          text = results.read(String)
           blob = results.read(Bytes)
           vector = unpack_vector(blob)
-          extra = results.read(String)
-          @entries << Entry.new(text, vector, extra)
+          @entry_embeddings << EntryVector.new(vector)
         end
       end
-
-      return if @entries.empty?
+      return if @entry_embeddings.empty?
 
       graph_saved = meta["graph_saved"] == 1
 
@@ -279,7 +338,7 @@ module Vecstolite
       ix_nodes = [] of HNSW::HNSWNode
 
       # Create node shells.
-      @entries.each do |entry|
+      @entry_embeddings.each do |entry|
         node = HNSW::HNSWNode.new(entry.vector, 0, @m)
         ix_nodes << node
       end
@@ -316,7 +375,7 @@ module Vecstolite
     # Used when no graph has been saved yet, or after a deletion.
     private def rebuild_index : Nil
       @index = new_index
-      @entries.each_with_index do |entry, id|
+      @entry_embeddings.each_with_index do |entry, id|
         @index.add(id: id, vector: entry.vector)
       end
     end
