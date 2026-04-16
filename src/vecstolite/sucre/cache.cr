@@ -91,4 +91,11 @@ class Cache(K, V)
   def size
     @cache.size
   end
+
+  # Force expired entries to be removed from the cache
+  def purge_expired
+    return unless ttl = @ttl
+    now = Time.instant
+    @cache.each { |k, v| @cache.delete(k) if now - v.last_read > ttl }
+  end
 end
