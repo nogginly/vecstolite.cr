@@ -87,5 +87,18 @@ Spectator.describe Vecstolite::LexicalEmbedder do
         end
       end
     end
+    describe "L2 normalisation" do
+      it "produces a unit vector for all-unique tokens" do
+        vec = embedder.embed("Sky is blue")
+        norm = vec.sum { |x| x * x }
+        expect(norm).to be_close(1.0_f32, 1e-6_f32)
+      end
+
+      it "produces a unit vector when tokens repeat" do
+        vec = embedder.embed("the cat sat on the mat")
+        norm = vec.sum { |x| x * x }
+        expect(norm).to be_close(1.0_f32, 1e-6_f32)
+      end
+    end
   end
 end

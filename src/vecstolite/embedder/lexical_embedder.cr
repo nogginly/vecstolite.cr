@@ -36,7 +36,7 @@ module Vecstolite
     end
 
     private def normalize(vec : Embedding) : Embedding
-      magnitude = Math.sqrt(VECM.sum(vec))
+      magnitude = Math.sqrt(VECM.dot(vec, vec))
       return vec if magnitude == 0.0_f32
 
       vec.map { |x| x / magnitude }
