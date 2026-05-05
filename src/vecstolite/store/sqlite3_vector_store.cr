@@ -95,16 +95,15 @@ module Vecstolite
     # Flush the in-memory HNSW graph topology to SQLite.
     # Call this explicitly if you want a durable checkpoint without closing.
     def save_graph : Nil
-      idx = @index
       @db.transaction do
         @db.exec "DELETE FROM #{TABLE_GRAPH_NODES}"
         @db.exec "DELETE FROM #{TABLE_GRAPH_EDGES}"
 
-        idx.@nodes.each_with_index do |node, node_id|
+        meta = @index.export do |node_id, neighbours|
           @db.exec "INSERT INTO #{TABLE_GRAPH_NODES} VALUES (?, ?)",
-            node_id, node.neighbours.size
+            node_id, neighbours.size
 
-          node.neighbours.each_with_index do |layer_neighbours, layer|
+          neighbours.each_with_index do |layer_neighbours, layer|
             layer_neighbours.each do |nb_id|
               @db.exec "INSERT INTO #{TABLE_GRAPH_EDGES} VALUES (?, ?, ?)",
                 node_id, layer, nb_id
@@ -112,8 +111,8 @@ module Vecstolite
           end
         end
 
-        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('entry_point', ?, NULL)", idx.@entry_point
-        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('max_layer',   ?, NULL)", idx.@max_layer
+        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('entry_point', ?, NULL)", meta[:entry_point]
+        @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('max_layer',   ?, NULL)", meta[:max_layer]
         @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('graph_saved', ?, NULL)", 1
       end
     end
@@ -335,22 +334,17 @@ module Vecstolite
 
     # Fast path: wire the saved graph topology directly without re-inserting.
     private def restore_graph_from_db(meta : Hash(String, Int32)) : Nil
-      ix_nodes = [] of HNSW::HNSWNode
+      node_count = @entry_embeddings.size
 
-      # Create node shells.
-      @entry_embeddings.each do |entry|
-        node = HNSW::HNSWNode.new(entry.vector, 0, @m)
-        ix_nodes << node
-      end
+      # Build neighbour lists from DB before passing to the index.
+      neighbours = Array(Array(Array(Int32))).new(node_count) { [] of Array(Int32) }
 
-      # Restore neighbour lists.
       @db.query("SELECT id, layer_count FROM #{TABLE_GRAPH_NODES} ORDER BY id") do |results|
         results.each do
           node_id = results.read(Int32)
           layer_count = results.read(Int32)
-          next unless node_id < ix_nodes.size
-          ix_nodes[node_id].neighbours =
-            Array(Array(Int32)).new(layer_count) { [] of Int32 }
+          next unless node_id < node_count
+          neighbours[node_id] = Array(Array(Int32)).new(layer_count) { [] of Int32 }
         end
       end
 
@@ -361,14 +355,21 @@ module Vecstolite
           node_id = results.read(Int32)
           layer = results.read(Int32)
           neighbour_id = results.read(Int32)
-          next unless node_id < ix_nodes.size
-          ix_nodes[node_id].neighbours[layer] << neighbour_id
+          next unless node_id < node_count
+          neighbours[node_id][layer] << neighbour_id
         end
       end
 
-      # HACK alert - reaches into HNSW::Index to reset.
-      # ONE DAY do something better
-      @index.reset_with(ix_nodes, meta["entry_point"], meta["max_layer"])
+      @index = HNSW::Index.restore(
+        dims: @embedder.dimensions,
+        m: @m,
+        ef_construction: @ef_construction,
+        entry_point: meta["entry_point"],
+        max_layer: meta["max_layer"],
+        node_count: node_count
+      ) do |id|
+        {@entry_embeddings[id].vector, neighbours[id]}
+      end
     end
 
     # Slow path: rebuild index by re-inserting all vectors.

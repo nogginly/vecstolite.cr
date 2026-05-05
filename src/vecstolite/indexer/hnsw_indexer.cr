@@ -154,10 +154,45 @@ module Vecstolite
         end
       end
 
-      protected def reset_with(nodes, entry_point, max_layer) : Nil
-        @nodes = nodes
-        @entry_point = entry_point
-        @max_layer = max_layer
+      # Restore an index from previously exported graph data without re-inserting vectors.
+      # Yields each sequential node id; the caller supplies the vector and neighbour lists
+      # for that node. Returns a fully wired Index.
+      #
+      # Example:
+      #   index = HNSW::Index.restore(dims: 1024, m: 16, ef_construction: 200,
+      #                               entry_point: ep, max_layer: ml,
+      #                               node_count: n) do |id|
+      #     { vectors[id], neighbours[id] }
+      #   end
+      def self.restore(dims : Int32, m : Int32, ef_construction : Int32,
+                       entry_point : Int32, max_layer : Int32,
+                       node_count : Int32,
+                       & : Int32 -> {Embedding, Array(Array(Int32))}) : Index
+        index = new(dims: dims, m: m, ef_construction: ef_construction)
+        node_count.times do |id|
+          vector, neighbours = yield id
+          node = HNSWNode.new(vector, 0, m)
+          node.neighbours = neighbours
+          index.@nodes << node
+        end
+        index.reset_with(entry_point, max_layer)
+        index
+      end
+
+      # Export the graph topology by yielding (node_id, neighbours) for every node,
+      # where neighbours is an Array per layer of neighbour ids.
+      # Returns graph-level metadata the caller needs to persist alongside the nodes.
+      #
+      # Example:
+      #   meta = index.export do |node_id, neighbours|
+      #     # persist node_id and neighbours ...
+      #   end
+      #   # persist meta[:entry_point] and meta[:max_layer]
+      def export(& : Int32, Array(Array(Int32)) ->) : NamedTuple(entry_point: Int32, max_layer: Int32)
+        @nodes.each_with_index do |node, id|
+          yield id, node.neighbours
+        end
+        {entry_point: @entry_point, max_layer: @max_layer}
       end
 
       # Return the *k* approximate nearest neighbours for *query*.
@@ -183,6 +218,11 @@ module Vecstolite
 
       def size : Int32
         @nodes.size
+      end
+
+      protected def reset_with(entry_point : Int32, max_layer : Int32) : Nil
+        @entry_point = entry_point
+        @max_layer = max_layer
       end
 
       # Draw a random layer for a new node.  Layer 0 is most common.
