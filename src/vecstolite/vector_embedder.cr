@@ -2,7 +2,7 @@ require "simd"
 
 module Vecstolite
   # Leverage SIMD vector embedding maths.
-  {% if flag?(:aarch64) && flag?(:darwin) %}
+  {% if flag?(:aarch64) %}
     # :nodoc:
     VECM = SIMD::NEON.new
   {% else %}
