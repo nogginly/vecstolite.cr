@@ -36,6 +36,30 @@ Spectator.describe Vecstolite::SQLiteVectorStore do
     end
   end
 
+  describe "#size" do
+    let(store) { described_class.create(db_file_name, embedder) }
+
+    it "reflects entries added in the same session" do
+      store.add("The sky is blue.")
+      store.add("Crystal is fast.")
+      expect(store.size).to eq(2)
+    end
+
+    context "after close and reopen" do
+      before_each do
+        s = described_class.create(db_file_name, embedder)
+        s.add("The sky is blue.")
+        s.add("Crystal is fast.")
+        s.close
+      end
+
+      it "reflects stored entries even before any search (no cache hits)" do
+        store = described_class.open(db_file_name, embedder)
+        expect(store.size).to eq(2)
+      end
+    end
+  end
+
   describe "#open" do
     context "before create" do
       let(open_store) { described_class.open(db_file_name, embedder) }

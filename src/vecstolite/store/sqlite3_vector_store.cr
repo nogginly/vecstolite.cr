@@ -170,7 +170,7 @@ module Vecstolite
     end
 
     def size : Int32
-      @entry_cache.size
+      @entry_embeddings.size
     end
 
     private def get_entry(id) : Entry
