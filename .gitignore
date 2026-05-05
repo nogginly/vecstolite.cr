@@ -12,3 +12,6 @@ tmp*
 *enkaidu*
 CLAUDE.md
 docs/
+
+# Ignore all db-related files at root
+*.db*
