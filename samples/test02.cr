@@ -18,7 +18,7 @@ store = Vecstolite::MemoryVectorStore.new(embedder)
   "A transformer is a type of neural network architecture.",
   "Flowers bloom in spring when temperatures rise.",
 ].each do |text|
-  store.add(text, extra: {hash: text.hash}.to_json)
+  store.add(text, meta: {hash: text.hash}.to_json)
 end
 
 puts "Stored #{store.size} entries.\n\n"
