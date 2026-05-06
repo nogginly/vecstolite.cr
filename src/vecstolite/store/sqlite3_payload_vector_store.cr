@@ -158,9 +158,9 @@ module Vecstolite
     # Retrieve a payload by id. Returns nil if not found.
     def get_payload(payload_id : Int64) : P?
       result = nil
-      @db.query("SELECT content FROM #{TABLE_PAYLOADS} WHERE id = ?", payload_id) do |rs|
-        rs.each do
-          result = P.from_json(rs.read(String))
+      @db.query("SELECT content FROM #{TABLE_PAYLOADS} WHERE id = ?", payload_id) do |result_set|
+        result_set.each do
+          result = P.from_json(result_set.read(String))
         end
       end
       result
