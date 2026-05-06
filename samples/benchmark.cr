@@ -29,7 +29,7 @@ puts "### Add all (#{sentences.size} sentences)"
 vector_stores.each do |name, store|
   result = Benchmark.measure {
     sentences.each do |text|
-      store.add(text, extra: {hash: text.hash}.to_json)
+      store.add(text, meta: {hash: text.hash}.to_json)
     end
   }
   puts "#{result}\t#{name}"

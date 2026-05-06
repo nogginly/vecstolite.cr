@@ -168,7 +168,7 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
 
       it "returns correct meta and payload after restore" do
         store = Store.open(db_file_name, embedder)
-        results = store.search("sky colour", k: 1)
+        results = store.search("sky is", k: 1)
         expect(results.first.meta.try(&.code)).to eq("en")
         expect(results.first.payload.not_nil!.en).to eq("The sky is blue")
       end

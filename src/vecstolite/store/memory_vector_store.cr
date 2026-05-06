@@ -13,7 +13,15 @@ module Vecstolite
   # results = store.search("colour of the sky", k: 3)
   # ```
   class MemoryVectorStore
-    include IndexedVectorStore
+    include IndexedVectorStore(String)
+
+    # One stored item in a vector store: the original text plus its embedding vector and optional extra string.
+    record Entry, text : String, vector : Embedding, extra : String?
+
+    # A single search result returned by `VectorStore#search`.
+    record MemVecSearchResult, text : String, score : Float32, extra : String? do
+      include VectorSearchResult
+    end
 
     @entries : Array(Entry)
     @embedder : VectorEmbedder
@@ -27,22 +35,22 @@ module Vecstolite
       @index = HNSW::Index.new(dims: embedder.dimensions, m: m, ef_construction: ef_construction)
     end
 
-    def add(text : String, extra : String? = nil) : Nil
+    def add(text : String, meta : String? = nil) : Nil
       vector = @embedder.embed(text)
       id = @entries.size
-      @entries << Entry.new(text, vector, extra)
+      @entries << Entry.new(text, vector, meta)
       @index.add(id: id, vector: vector)
     end
 
     # :inherit:
     # Adjust `ef` to trade speed (lower) for recall (higher).
-    def search(query : String, k : Int32 = DEFAULT_K, ef_search : Int32 = DEFAULT_EF_SEARCH) : Array(SearchResult)
-      return [] of SearchResult if @entries.empty?
+    def search(query : String, k : Int32, ef_search : Int32) : Array
+      return [] of MemVecSearchResult if @entries.empty?
 
       query_vec = @embedder.embed(query)
       @index.search(query_vec, k: k, ef: ef_search).map do |result|
         entry = @entries[result.id]
-        SearchResult.new(entry.text, result.score, entry.extra)
+        MemVecSearchResult.new(entry.text, result.score, entry.extra)
       end
     end
 
