@@ -8,6 +8,7 @@ require "./vecstolite/store/*"
 # - `LinearVectorStore`
 # - `IndexedVectorStore`
 # - `SQLiteVectorStore`
+# - `SQLitePayloadVectorStore`
 #
 # The following types of vector embedders are available:
 #

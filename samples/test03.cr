@@ -33,7 +33,7 @@ begin
       "Compiled languages are generally faster than interpreted ones.",
       "Flowers bloom in spring when temperatures rise.",
     ].each do |text|
-      store.add(text, extra: {hash: text.hash}.to_json)
+      store.add(text, meta: {hash: text.hash}.to_json)
     end
 
     puts "Added 5"
@@ -45,7 +45,7 @@ begin
       "The ocean reflects the colour of the sky.",
       "A transformer is a type of neural network architecture.",
     ].each do |text|
-      store.add(text, extra: {hash: text.hash}.to_json)
+      store.add(text, meta: {hash: text.hash}.to_json)
     end
   end
   puts store.stats

@@ -28,9 +28,17 @@ module Vecstolite
   # ```
   #
   class SQLiteVectorStore
-    include IndexedVectorStore
+    include IndexedVectorStore(String)
 
     class Error < Exception; end
+
+    # One stored item in a vector store: the original text plus its embedding vector and optional extra string.
+    record Entry, text : String, vector : Embedding, extra : String?
+
+    # A single search result returned by `VectorStore#search`.
+    record SearchResult, text : String, score : Float32, extra : String? do
+      include VectorSearchResult
+    end
 
     SCHEMA_VERSION = 1
 
@@ -130,7 +138,7 @@ module Vecstolite
     # -------------------------------------------------------------------------
 
     # Add and index `text`, with optional `extra` data (not embedded or indexed)
-    def add(text : String, extra : String? = nil) : Nil
+    def add(text : String, meta : String? = nil) : Nil
       raise Error.new("Store is closed") if @closed
       raise Error.new("Store is readonly") if @readonly
 
@@ -141,10 +149,10 @@ module Vecstolite
 
       @db.transaction do
         @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector, extra) VALUES (?, ?, ?, ?)",
-          id, text, pack_vector(vector), extra
+          id, text, pack_vector(vector), meta
       end
 
-      @entry_cache.put(id, Entry.new(text, vector, extra))
+      @entry_cache.put(id, Entry.new(text, vector, meta))
       @entry_embeddings << EntryVector.new(vector)
 
       @index.add(id: id, vector: vector)
@@ -153,8 +161,7 @@ module Vecstolite
     # -------------------------------------------------------------------------
     # Queries
     # -------------------------------------------------------------------------
-
-    def search(query : String, k : Int32 = DEFAULT_K, ef_search : Int32 = DEFAULT_EF_SEARCH) : Array(SearchResult)
+    def search(query : String, k : Int32, ef_search : Int32) : Array
       raise Error.new("Store is closed") if @closed
 
       return [] of SearchResult if @entry_embeddings.empty?

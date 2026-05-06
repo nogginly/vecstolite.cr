@@ -32,6 +32,8 @@ module Vecstolite
   # ```
   #
   class SQLitePayloadVectorStore(M, P)
+    include IndexedVectorStore(M)
+
     class Error < Exception; end
 
     SCHEMA_VERSION          =   2
@@ -46,7 +48,9 @@ module Vecstolite
       text : String,
       score : Float32,
       meta : M?,
-      payload : P?
+      payload : P? do
+      include VectorSearchResult
+    end
 
     # Open an existing store at `path`.
     def self.open(path : String,
@@ -154,9 +158,9 @@ module Vecstolite
     # Retrieve a payload by id. Returns nil if not found.
     def get_payload(payload_id : Int64) : P?
       result = nil
-      @db.query("SELECT content FROM #{TABLE_PAYLOADS} WHERE id = ?", payload_id) do |rs|
-        rs.each do
-          result = P.from_json(rs.read(String))
+      @db.query("SELECT content FROM #{TABLE_PAYLOADS} WHERE id = ?", payload_id) do |result_set|
+        result_set.each do
+          result = P.from_json(result_set.read(String))
         end
       end
       result
@@ -165,6 +169,10 @@ module Vecstolite
     # -------------------------------------------------------------------------
     # Mutations
     # -------------------------------------------------------------------------
+
+    def add(text : String, extra : M? = nil) : Nil
+      add(text, meta: extra)
+    end
 
     # Add and index `text`.
     # - `meta`       — optional metadata about this embedding (e.g. language, offset).
@@ -192,7 +200,7 @@ module Vecstolite
     # Queries
     # -------------------------------------------------------------------------
 
-    def search(query : String, k : Int32 = DEFAULT_K, ef_search : Int32 = DEFAULT_EF_SEARCH) : Array(SearchResult(M, P))
+    def search(query : String, k : Int32 = DEFAULT_K, ef_search : Int32 = DEFAULT_EF_SEARCH) : Array
       raise Error.new("Store is closed") if @closed
 
       return [] of SearchResult(M, P) if @entry_embeddings.empty?

@@ -5,21 +5,20 @@ require "./vector_embedder"
 # ---------------------------------------------------------------------------
 
 module Vecstolite
+  module VectorSearchResult
+    abstract def text : String
+    abstract def score : Float32
+  end
+
   # Base definition for a vector store
-  module VectorStore
+  module VectorStore(M)
     DEFAULT_K = 5
 
-    # One stored item in a vector store: the original text plus its embedding vector and optional extra string.
-    record Entry, text : String, vector : Embedding, extra : String?
-
-    # A single search result returned by `VectorStore#search`.
-    record SearchResult, text : String, score : Float32, extra : String?
-
-    # Add and index `text`, with optional `extra` data (not embedded or indexed).
-    abstract def add(text : String, extra : String? = nil) : Nil
+    # Add and index `text`, with optional `meta` data (not embedded or indexed).
+    abstract def add(text : String, meta : M? = nil) : Nil
 
     # Search for `k` entries that are most similar to `query`.
-    abstract def search(query : String, k : Int32 = DEFAULT_K) : Array(SearchResult)
+    abstract def search(query : String, k : Int32 = DEFAULT_K) : Array
 
     # Total number of entries in the store.
     abstract def size : Int32

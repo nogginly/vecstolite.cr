@@ -11,7 +11,15 @@ module Vecstolite
   # results = store.search("colour of the sky", k: 3)
   # ```
   class LinearVectorStore
-    include VectorStore
+    include VectorStore(String)
+
+    # One stored item in a vector store: the original text plus its embedding vector and optional extra string.
+    record Entry, text : String, vector : Embedding, extra : String?
+
+    # A single search result returned by `VectorStore#search`.
+    record SearchResult, text : String, score : Float32, extra : String? do
+      include VectorSearchResult
+    end
 
     @entries : Array(Entry)
     @embedder : VectorEmbedder
@@ -21,15 +29,15 @@ module Vecstolite
       @entries = [] of Entry
     end
 
-    # Add and index `text`, with optional `extra` data (not embedded or indexed)
-    def add(text : String, extra : String? = nil) : Nil
+    # Add and index `text`, with optional `meta` data (not embedded or indexed)
+    def add(text : String, meta : String? = nil) : Nil
       vector = @embedder.embed(text)
-      @entries << Entry.new(text, vector, extra)
+      @entries << Entry.new(text, vector, meta)
     end
 
     # Return the top-`k` entries most similar to `query`, sorted descending.
-    def search(query : String, k : Int32 = DEFAULT_K) : Array(SearchResult)
-      return [] of SearchResult if @entries.empty?
+    def search(query : String, k : Int32 = DEFAULT_K) : Array(VectorSearchResult)
+      return [] of VectorSearchResult if @entries.empty?
 
       query_vec = @embedder.embed(query)
 
@@ -37,6 +45,7 @@ module Vecstolite
         .map { |entry| SearchResult.new(entry.text, cosine_similarity(query_vec, entry.vector), entry.extra) }
         .sort_by! { |result| -result.score }
         .first(k)
+        .map(&.as(VectorSearchResult))
     end
 
     # Total number of stored chunks.
