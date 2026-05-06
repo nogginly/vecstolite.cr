@@ -168,9 +168,16 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
 
       it "returns correct meta and payload after restore" do
         store = Store.open(db_file_name, embedder)
-        results = store.search("sky is", k: 1)
-        expect(results.first.meta.try(&.code)).to eq("en")
-        expect(results.first.payload.not_nil!.en).to eq("The sky is blue")
+        results = store.search("sky is blue", k: 2)
+        expect(results.size).to eq(2)
+        # Both results should resolve the same payload regardless of ranking order.
+        results.each do |r|
+          expect(r.payload.not_nil!.en).to eq("The sky is blue")
+        end
+        # Both languages should be represented.
+        langs = results.map { |r| r.meta.try(&.code) }
+        expect(langs).to contain("en")
+        expect(langs).to contain("fr")
       end
     end
   end
