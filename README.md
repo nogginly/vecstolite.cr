@@ -2,6 +2,8 @@
 
 A vector embedding-based storage _shard_ for Crystal with in-memory and SQLite3 back-ends.
 
+> See [DISCLOSURE.md](./DISCLOSURE.md) for how AI is used in this project.
+
 ## Installation
 
 1. Add the dependency to your `shard.yml`:
