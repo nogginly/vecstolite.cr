@@ -18,5 +18,9 @@ shards:
 
   sqlite3:
     git: https://github.com/crystal-lang/crystal-sqlite3.git
-    version: 0.22.0
+    version: 0.23.0
+
+  wiretap:
+    git: https://github.com/nogginly/wiretap.cr.git
+    version: 0.3.0
 

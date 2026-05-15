@@ -12,7 +12,8 @@ development_dependencies:
     github: crystal-ameba/ameba
   spectator:
     gitlab: arctic-fox/spectator
-
+  wiretap:
+    github: nogginly/wiretap.cr
 dependencies:
   simd:
     github: nogginly/simd.cr.fork
