@@ -1,7 +1,7 @@
 require "../../spec_helper"
 
 Spectator.describe Vecstolite::OpenAIEmbedder do
-  let(dimensions) { 1024 }
+  let(dimensions) { 768 }
   let(api_key) { "ollama" }
   let(embedder) { described_class.new(dimensions, api_key) }
 
@@ -17,11 +17,26 @@ Spectator.describe Vecstolite::OpenAIEmbedder do
     let(embedder) { described_class.new(dimensions, api_key, model, base_url) }
 
     describe "#model_name" do
-      it "starts with 'localhost/'" do
-        expect(embedder.model_name).to start_with("localhost/")
+      it "ends with '@localhost'" do
+        expect(embedder.model_name).to end_with("@localhost")
       end
-      it "ends with model" do
-        expect(embedder.model_name).to end_with(model)
+      it "starts with model" do
+        expect(embedder.model_name).to start_with(model)
+      end
+    end
+
+    describe "#embed" do
+      context "get an embedding" do
+        before_each do
+          base_name = __DIR__
+        end
+        it "succeeds" do
+          Wiretap.intercept("embed") do
+            embedding = embedder.embed("The weather in the Ozarks is colder today than yesterday.")
+            expect(embedding).to be_a(Slice(Float32))
+            expect(embedding.size).to eq(dimensions)
+          end
+        end
       end
     end
   end
@@ -31,11 +46,11 @@ Spectator.describe Vecstolite::OpenAIEmbedder do
     let(embedder) { described_class.new(dimensions, api_key, model) }
 
     describe "#model_name" do
-      it "starts with 'api.openai.com/'" do
-        expect(embedder.model_name).to start_with("api.openai.com/")
+      it "ends with '@api.openai.com'" do
+        expect(embedder.model_name).to end_with("@api.openai.com")
       end
-      it "ends with model" do
-        expect(embedder.model_name).to end_with(model)
+      it "starts with model" do
+        expect(embedder.model_name).to start_with(model)
       end
     end
   end
