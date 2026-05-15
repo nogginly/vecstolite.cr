@@ -69,7 +69,7 @@ module Vecstolite
 
     # Unique name for the embedding model
     def model_name : String
-      @model_name ||= "#{URI.parse(@base_url).host}/#{@model}"
+      @model_name ||= "#{@model}@#{URI.parse(@base_url).host}"
     end
 
     # Embed a single string.  Returns the embedding as Embedding.
