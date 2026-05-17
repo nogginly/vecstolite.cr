@@ -61,12 +61,29 @@ module Vecstolite
     # A result returned from Index#search.
     record AnnResult, id : Int32, score : Float32
 
+    # Abstraction for node access — allows different storage strategies
+    # (e.g., in-memory vs. cache + DB backend)
+    abstract class NodeProvider
+      abstract def get(id : Int32) : HNSWNode
+    end
+
+    # Direct access to in-memory node array
+    private class DirectNodeProvider < NodeProvider
+      def initialize(@nodes : Array(HNSWNode))
+      end
+
+      def get(id : Int32) : HNSWNode
+        @nodes[id]
+      end
+    end
+
     class Index
       DEFAULT_M               =  16
       DEFAULT_EF_CONSTRUCTION = 200
       DEFAULT_EF_SEARCH       =  50
 
       @nodes : Array(HNSWNode)
+      @node_provider : NodeProvider
       @entry_point : Int32 # ID of the current graph entry point
       @max_layer : Int32   # highest layer currently in the graph
       @m : Int32
@@ -87,6 +104,7 @@ module Vecstolite
         @ef_construction = ef_construction
         @ml = 1.0 / Math.log(m.to_f64)
         @nodes = [] of HNSWNode
+        @node_provider = DirectNodeProvider.new(@nodes)
         @entry_point = -1
         @max_layer = -1
         @rng = seed ? Random.new(seed) : Random.new
@@ -136,7 +154,7 @@ module Vecstolite
 
           # Wire back-edges (mutual connections).
           neighbours.each do |neighbor|
-            nb_node = @nodes[neighbor.id]
+            nb_node = fetch_node(neighbor.id)
             unless nb_node.neighbours[layer].includes?(id)
               nb_node.neighbours[layer] << id
               # Prune if over limit.
@@ -225,6 +243,16 @@ module Vecstolite
         @max_layer = max_layer
       end
 
+      # Set the node provider for custom access strategies (used for caching, etc.)
+      protected def set_node_provider(provider : NodeProvider) : Nil
+        @node_provider = provider
+      end
+
+      # Fetch a node via the provider (abstraction point for caching)
+      private def fetch_node(id : Int32) : HNSWNode
+        @node_provider.get(id)
+      end
+
       # Draw a random layer for a new node.  Layer 0 is most common.
       private def random_layer : Int32
         layer = 0
@@ -238,12 +266,12 @@ module Vecstolite
       # distance to *query*, repeat until no improvement.
       private def greedy_descend(query : Embedding, start : Int32, layer : Int32) : Int32
         best = start
-        best_d = distance(query, @nodes[start].vector)
+        best_d = distance(query, fetch_node(start).vector)
 
         loop do
           changed = false
-          @nodes[best].neighbours[layer].each do |nb_id|
-            d = distance(query, @nodes[nb_id].vector)
+          fetch_node(best).neighbours[layer].each do |nb_id|
+            d = distance(query, fetch_node(nb_id).vector)
             if d < best_d
               best = nb_id
               best_d = d
@@ -271,7 +299,7 @@ module Vecstolite
         visited = Set(Int32).new
         visited << entry
 
-        entry_dist = distance(query, @nodes[entry].vector)
+        entry_dist = distance(query, fetch_node(entry).vector)
         seed = Candidate.new(entry, entry_dist)
 
         candidates = BinaryHeap(Candidate).new { |this, that| this.dist <= that.dist }  # min-heap
@@ -284,11 +312,11 @@ module Vecstolite
           best = candidates.pop                      # O(log n) — nearest candidate
           break if best.dist > dynamic_set.peek.dist # O(1)     — worst in result set
 
-          @nodes[best.id].neighbours[layer].each do |nb_id|
+          fetch_node(best.id).neighbours[layer].each do |nb_id|
             next if visited.includes?(nb_id)
             visited << nb_id
 
-            d = distance(query, @nodes[nb_id].vector)
+            d = distance(query, fetch_node(nb_id).vector)
 
             if d < dynamic_set.peek.dist || dynamic_set.size < ef
               c = Candidate.new(nb_id, d)
@@ -324,7 +352,7 @@ module Vecstolite
         m : Int32,
       ) : Array(Int32)
         neighbour_ids
-          .map { |nb_id| {nb_id, distance(base_vec, @nodes[nb_id].vector)} }
+          .map { |nb_id| {nb_id, distance(base_vec, fetch_node(nb_id).vector)} }
           .sort_by! { |_, dist| dist }
           .first(m)
           .map { |nb_id, _| nb_id }
