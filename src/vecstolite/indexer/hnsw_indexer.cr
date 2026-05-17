@@ -1,4 +1,5 @@
 require "./binary_heap"
+require "./hnsw_node_cache"
 require "../vector_embedder"
 
 module Vecstolite
