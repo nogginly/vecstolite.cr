@@ -53,36 +53,44 @@ module Vecstolite
     end
 
     # Open an existing store at `path`.
+    # Optional `cache_max_bytes` enables smart node caching for large indices
+    # (set to nil to disable caching and load full index into memory on each open).
     def self.open(path : String,
                   embedder : VectorEmbedder,
                   readonly = false,
                   cache_ttl : Time::Span? = nil,
-                  cache_purge_period : Time::Span? = nil) : self
+                  cache_purge_period : Time::Span? = nil,
+                  cache_max_bytes : Int32? = 536_870_912) : self
       raise Error.new("Database '#{path}' does not exist.") unless File.exists?(path)
 
       db = DB.open("sqlite3://#{path}")
       store = new(embedder, db, path,
         readonly: readonly,
         cache_ttl: cache_ttl,
-        cache_purge_period: cache_purge_period)
+        cache_purge_period: cache_purge_period,
+        cache_max_bytes: cache_max_bytes)
       store.bootstrap
       store
     end
 
     # Create a new store at `path`.
+    # Optional `cache_max_bytes` enables smart node caching for large indices
+    # (set to nil to disable caching; use `load_all_in_memory!` to eager-load instead).
     def self.create(path : String,
                     embedder : VectorEmbedder,
                     m = DEFAULT_M,
                     ef_construction = DEFAULT_EF_CONSTRUCTION,
                     cache_ttl : Time::Span? = nil,
-                    cache_purge_period : Time::Span? = nil) : self
+                    cache_purge_period : Time::Span? = nil,
+                    cache_max_bytes : Int32? = 536_870_912) : self
       raise Error.new("Database '#{path}' already exists.") if File.exists?(path)
 
       db = DB.open("sqlite3://#{path}")
       store = new(embedder, db, path, m, ef_construction,
         readonly: false,
         cache_ttl: cache_ttl,
-        cache_purge_period: cache_purge_period)
+        cache_purge_period: cache_purge_period,
+        cache_max_bytes: cache_max_bytes)
       store.bootstrap
       store
     end
@@ -128,6 +136,9 @@ module Vecstolite
         @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('max_layer',   ?, NULL)", meta[:max_layer]
         @db.exec "INSERT OR REPLACE INTO #{TABLE_META} VALUES ('graph_saved', ?, NULL)", 1
       end
+
+      # Now that graph is saved to DB, switch to CachedNodeProvider if caching is enabled
+      setup_node_provider if @node_cache
     end
 
     # Returns stats `NamedTuple`:
@@ -136,6 +147,72 @@ module Vecstolite
     # - `cached`        — entries currently in the lazy cache
     def stats : NamedTuple
       {cached: @entry_cache.size, embeddings: @entry_embeddings.size, indexed_nodes: @index.size}
+    end
+
+    # Eagerly load the entire HNSW graph into memory, disabling node caching.
+    # Useful for datasets that fit in RAM and benefit from direct array access.
+    # After calling this, the index will use DirectNodeProvider instead of CachedNodeProvider.
+    def load_all_in_memory! : Nil
+      raise Error.new("Store is closed") if @closed
+      return if @node_cache.nil? # Already loaded or caching disabled
+
+                # Disable the cache and switch back to DirectNodeProvider
+                # (All nodes are now in memory via @index.nodes)
+      @node_cache = nil
+      @index.set_node_provider(HNSW::DirectNodeProvider.new(@index.nodes))
+    end
+
+    # Setup the node provider for the HNSW index based on cache configuration.
+    # If caching is enabled AND graph has been persisted, creates a CachedNodeProvider with a DB loader.
+    # Otherwise, uses the DirectNodeProvider for in-memory access.
+    private def setup_node_provider : Nil
+      # Check if graph has been saved to DB (nodes are available to load)
+      graph_saved = @db.query_one?("SELECT value FROM #{TABLE_META} WHERE key = 'graph_saved'", &.read(Int32)) == 1
+
+      if graph_saved && (cache = @node_cache)
+        # Create a loader that fetches nodes from the DB
+        loader = ->(id : Int32) do
+          node_id = id
+          layer_count = 0
+          neighbours = [] of Array(Int32)
+
+          # Load the node's layer count
+          @db.query_one(
+            "SELECT layer_count FROM #{TABLE_GRAPH_NODES} WHERE id = ?",
+            node_id
+          ) do |rs|
+            layer_count = rs.read(Int32)
+          end
+
+          # Initialize empty neighbor lists
+          neighbours = Array(Array(Int32)).new(layer_count) { [] of Int32 }
+
+          # Load neighbors for each layer
+          @db.query(
+            "SELECT layer, neighbour_id FROM #{TABLE_GRAPH_EDGES} WHERE node_id = ? ORDER BY layer",
+            node_id
+          ) do |rs|
+            rs.each do
+              layer = rs.read(Int32)
+              neighbour_id = rs.read(Int32)
+              neighbours[layer] << neighbour_id
+            end
+          end
+
+          # Construct the HNSWNode with vector and neighbors
+          vector = @entry_embeddings[node_id].vector
+          node = HNSW::HNSWNode.new(vector, layer_count - 1, @m)
+          node.neighbours = neighbours
+          node
+        end
+
+        provider = HNSW::CachedNodeProvider.new(cache, &loader)
+        @index.set_node_provider(provider)
+      else
+        # No caching or graph not yet saved: use DirectNodeProvider for in-memory array access
+        provider = HNSW::DirectNodeProvider.new(@index.nodes)
+        @index.set_node_provider(provider)
+      end
     end
 
     # -------------------------------------------------------------------------
@@ -242,26 +319,31 @@ module Vecstolite
     @entry_cache : Cache(Int32, CachedEntry(M))
     @cache_last_purged = Time.instant
     @cache_purge_period : Time::Span?
+    @node_cache : HNSW::NodeCache?
 
     private def initialize(@embedder : VectorEmbedder, @db : DB::Database, @path : String,
                            @m : Int32, @ef_construction : Int32, @readonly,
                            cache_ttl : Time::Span? = nil,
-                           @cache_purge_period : Time::Span? = nil)
+                           @cache_purge_period : Time::Span? = nil,
+                           cache_max_bytes : Int32? = nil)
       @entry_cache = Cache(Int32, CachedEntry(M)).new(cache_ttl)
       @entry_embeddings = [] of EntryVector
       @index = new_index
+      @node_cache = cache_max_bytes ? HNSW::NodeCache.new(cache_max_bytes) : nil
       @closed = false
     end
 
     private def initialize(@embedder : VectorEmbedder, @db : DB::Database,
                            @path : String, @readonly,
                            cache_ttl : Time::Span? = nil,
-                           @cache_purge_period : Time::Span? = nil)
+                           @cache_purge_period : Time::Span? = nil,
+                           cache_max_bytes : Int32? = nil)
       @entry_cache = Cache(Int32, CachedEntry(M)).new(cache_ttl)
       @entry_embeddings = [] of EntryVector
       @m = DEFAULT_M
       @ef_construction = DEFAULT_EF_CONSTRUCTION
       @index = new_index
+      @node_cache = cache_max_bytes ? HNSW::NodeCache.new(cache_max_bytes) : nil
       @closed = false
     end
 
@@ -330,6 +412,7 @@ module Vecstolite
       @index = new_index
 
       load_from_db(meta)
+      setup_node_provider
     end
 
     private def load_from_db(meta : Hash(String, Int32)) : Nil
