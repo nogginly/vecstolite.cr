@@ -69,7 +69,7 @@ module Vecstolite
     end
 
     # Direct access to in-memory node array
-    private class DirectNodeProvider < NodeProvider
+    class DirectNodeProvider < NodeProvider
       def initialize(@nodes : Array(HNSWNode))
       end
 
@@ -237,6 +237,11 @@ module Vecstolite
 
       def size : Int32
         @nodes.size
+      end
+
+      # Access the underlying node array (protected; used for DirectNodeProvider)
+      protected def nodes : Array(HNSWNode)
+        @nodes
       end
 
       protected def reset_with(entry_point : Int32, max_layer : Int32) : Nil
