@@ -40,7 +40,7 @@ module Vecstolite
 
         # Evict LRU nodes until there's space
         while @bytes_used + size > @max_bytes && @cache.size > 0
-          evict_one
+          break unless evict_one # Break if we can't evict any more (all pinned)
         end
 
         @cache[id] = CacheEntry.new(node, size, Time.utc)
@@ -102,18 +102,20 @@ module Vecstolite
         vector_bytes + neighbor_bytes + overhead
       end
 
-      # Private: Evict the least-recently-used non-pinned node
-      private def evict_one : Nil
+      # Private: Evict the least-recently-used non-pinned node.
+      # Returns true if a node was evicted, false if no non-pinned nodes exist.
+      private def evict_one : Bool
         # Find the oldest non-pinned node
         oldest_id = @cache.keys
           .reject { |id| @pinned.includes?(id) }
           .min_by? { |id| @cache[id].accessed_at }
 
-        return unless oldest_id
+        return false unless oldest_id
 
         if entry = @cache.delete(oldest_id)
           @bytes_used -= entry.size
         end
+        true
       end
     end
   end

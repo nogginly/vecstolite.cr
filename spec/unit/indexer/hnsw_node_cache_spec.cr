@@ -101,36 +101,40 @@ Spectator.describe Vecstolite::HNSW::NodeCache do
   end
 
   describe "LRU eviction" do
-    let(small_cache) { described_class.new(1_000) } # Very tight budget
+    let(small_cache) { described_class.new(1_200) } # Fits exactly 2 nodes
 
     it "evicts least-recently-used node when over budget" do
       # Add node 0
       small_cache.put(0, make_node(64, 2))
       expect(small_cache.cached?(0)).to be_true
 
-      # Add node 1, forcing eviction (cache is small)
+      # Add node 1 (both fit in 1200 budget: 2 × 476 = 952)
       small_cache.put(1, make_node(64, 2))
+      expect(small_cache.cached?(0)).to be_true
+      expect(small_cache.cached?(1)).to be_true
 
-      # Access node 0 to make it recent, then add node 2
+      # Access node 0 to make it recent
       small_cache.get?(0)
+
+      # Add node 2 (would exceed budget, must evict)
+      # Node 1 is oldest (least recent), should be evicted
       small_cache.put(2, make_node(64, 2))
 
       # Node 1 should be evicted (least recent)
       expect(small_cache.cached?(1)).to be_false
+      # Nodes 0 and 2 should remain
       expect(small_cache.cached?(0)).to be_true
       expect(small_cache.cached?(2)).to be_true
     end
 
     it "does not evict pinned nodes" do
-      cache = described_class.new(1_000, pinned_ids: [0])
-      small_cache.pin(0)
-
-      small_cache.put(0, make_node(64, 2))
-      small_cache.put(1, make_node(64, 2))
-      small_cache.put(2, make_node(64, 2))
+      pinned_cache = described_class.new(1_000, pinned_ids: [0])
+      pinned_cache.put(0, make_node(64, 2))
+      pinned_cache.put(1, make_node(64, 2))
+      pinned_cache.put(2, make_node(64, 2))
 
       # Node 0 is pinned, so it should never be evicted
-      expect(small_cache.cached?(0)).to be_true
+      expect(pinned_cache.cached?(0)).to be_true
     end
   end
 
