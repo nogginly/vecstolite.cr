@@ -1,5 +1,5 @@
 name: vecstolite
-version: 0.5.1
+version: 0.5.2
 license: MPL2
 description: |
   A vector store for Crystal applications.
