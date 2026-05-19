@@ -167,6 +167,13 @@ module Vecstolite
       @entry_embeddings << EntryVector.new(vector)
 
       @index.add(id: id, vector: vector)
+
+      # Only clear cache if graph has been persisted to DB.
+      # During initial adds (before first save), all nodes are in-memory anyway.
+      # After save, new adds may modify existing cached nodes, so invalidate.
+      if (ncache = @node_cache) && @db.query_one?("SELECT value FROM #{TABLE_META} WHERE key = 'graph_saved'", &.read(Int32)) == 1
+        ncache.clear_unpinned
+      end
     end
 
     # -------------------------------------------------------------------------
