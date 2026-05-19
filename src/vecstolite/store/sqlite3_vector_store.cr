@@ -394,8 +394,8 @@ module Vecstolite
           @db.query_one(
             "SELECT layer_count FROM #{TABLE_GRAPH_NODES} WHERE id = ?",
             node_id
-          ) do |rs|
-            layer_count = rs.read(Int32)
+          ) do |result_set|
+            layer_count = result_set.read(Int32)
           end
 
           # Initialize empty neighbor lists
@@ -405,10 +405,10 @@ module Vecstolite
           @db.query(
             "SELECT layer, neighbour_id FROM #{TABLE_GRAPH_EDGES} WHERE node_id = ? ORDER BY layer",
             node_id
-          ) do |rs|
-            rs.each do
-              layer = rs.read(Int32)
-              neighbour_id = rs.read(Int32)
+          ) do |result_set|
+            result_set.each do
+              layer = result_set.read(Int32)
+              neighbour_id = result_set.read(Int32)
               neighbours[layer] << neighbour_id
             end
           end
