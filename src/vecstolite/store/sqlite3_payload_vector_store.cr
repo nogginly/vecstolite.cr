@@ -135,7 +135,7 @@ module Vecstolite
     # - `indexed_nodes` — nodes in the HNSW index (should match `embeddings`)
     # - `cached`        — entries currently in the lazy cache
     def stats : NamedTuple
-      {cached: @entry_cache.size, embeddings: @entry_embeddings.size, indexed_nodes: @index.size}
+      {cached: @entry_cache.size, embeddings: @index.size, indexed_nodes: @index.size}
     end
 
     # -------------------------------------------------------------------------
@@ -184,15 +184,14 @@ module Vecstolite
       purge_expired_from_cache
 
       vector = @embedder.embed(text)
-      id = @entry_embeddings.size
+      id = @index.size
 
       @db.transaction do
         @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector, meta, payload_id) VALUES (?, ?, ?, ?, ?)",
           id, text, pack_vector(vector), meta.try(&.to_json), payload_id
       end
 
-      @entry_cache.put(id, CachedEntry.new(text, vector, meta, payload_id))
-      @entry_embeddings << EntryVector.new(vector)
+      @entry_cache.put(id, CachedEntry.new(text, meta, payload_id))
       @index.add(id: id, vector: vector)
     end
 
@@ -203,7 +202,7 @@ module Vecstolite
     def search(query : String, k : Int32 = DEFAULT_K, ef_search : Int32 = DEFAULT_EF_SEARCH) : Array
       raise Error.new("Store is closed") if @closed
 
-      return [] of SearchResult(M, P) if @entry_embeddings.empty?
+      return [] of SearchResult(M, P) if @index.size == 0
 
       purge_expired_from_cache
 
@@ -216,23 +215,19 @@ module Vecstolite
     end
 
     def size : Int32
-      @entry_embeddings.size
+      @index.size
     end
 
     # -------------------------------------------------------------------------
 
-    private record EntryVector, vector : Embedding
-
     private record CachedEntry(M),
       text : String,
-      vector : Embedding,
       meta : M?,
       payload_id : Int64?
 
     @readonly : Bool
     @db : DB::Database
     @path : String
-    @entry_embeddings : Array(EntryVector)
     @embedder : VectorEmbedder
     @index : HNSW::Index
     @closed : Bool
@@ -248,7 +243,6 @@ module Vecstolite
                            cache_ttl : Time::Span? = nil,
                            @cache_purge_period : Time::Span? = nil)
       @entry_cache = Cache(Int32, CachedEntry(M)).new(cache_ttl)
-      @entry_embeddings = [] of EntryVector
       @index = new_index
       @closed = false
     end
@@ -258,7 +252,6 @@ module Vecstolite
                            cache_ttl : Time::Span? = nil,
                            @cache_purge_period : Time::Span? = nil)
       @entry_cache = Cache(Int32, CachedEntry(M)).new(cache_ttl)
-      @entry_embeddings = [] of EntryVector
       @m = DEFAULT_M
       @ef_construction = DEFAULT_EF_CONSTRUCTION
       @index = new_index
@@ -333,23 +326,24 @@ module Vecstolite
     end
 
     private def load_from_db(meta : Hash(String, Int32)) : Nil
+      vectors = [] of Embedding
       @db.query("SELECT vector FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |results|
         results.each do
           blob = results.read(Bytes)
-          @entry_embeddings << EntryVector.new(unpack_vector(blob))
+          vectors << unpack_vector(blob)
         end
       end
-      return if @entry_embeddings.empty?
+      return if vectors.empty?
 
       if meta["graph_saved"] == 1
-        restore_graph_from_db(meta)
+        restore_graph_from_db(meta, vectors)
       else
-        rebuild_index
+        rebuild_index(vectors)
       end
     end
 
-    private def restore_graph_from_db(meta : Hash(String, Int32)) : Nil
-      node_count = @entry_embeddings.size
+    private def restore_graph_from_db(meta : Hash(String, Int32), vectors : Array(Embedding)) : Nil
+      node_count = vectors.size
       neighbours = Array(Array(Array(Int32))).new(node_count) { [] of Array(Int32) }
 
       @db.query("SELECT id, layer_count FROM #{TABLE_GRAPH_NODES} ORDER BY id") do |results|
@@ -381,14 +375,14 @@ module Vecstolite
         max_layer: meta["max_layer"],
         node_count: node_count
       ) do |id|
-        {@entry_embeddings[id].vector, neighbours[id]}
+        {vectors[id], neighbours[id]}
       end
     end
 
-    private def rebuild_index : Nil
+    private def rebuild_index(vectors : Array(Embedding)) : Nil
       @index = new_index
-      @entry_embeddings.each_with_index do |entry, id|
-        @index.add(id: id, vector: entry.vector)
+      vectors.each_with_index do |vector, id|
+        @index.add(id: id, vector: vector)
       end
     end
 
@@ -403,12 +397,12 @@ module Vecstolite
         id
       ) do |results|
         results.each do
-          entry_id = results.read(Int32)
+          _entry_id = results.read(Int32)
           text = results.read(String)
           meta_json = results.read(String?)
           payload_id = results.read(Int64?)
           meta = meta_json.try { |j| M.from_json(j) }
-          entry = CachedEntry.new(text, @entry_embeddings[entry_id].vector, meta, payload_id)
+          entry = CachedEntry.new(text, meta, payload_id)
         end
       end
       entry || raise Error.new("Unexpected error fetching entry (id = #{id}) from DB.")

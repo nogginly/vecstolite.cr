@@ -58,6 +58,45 @@ module Vecstolite
       end
     end
 
+    # NodeStore is the abstract interface for storing HNSW graph nodes
+    # (vector + neighbour lists). It is the single source of truth for all
+    # node data — replacing the former split between @entry_embeddings and
+    # the index's own @nodes array.
+    #
+    # Phase 1 provides only MemoryNodeStore.
+    # Phases 2–3 will add LRUNodeStore and DiskNodeStore.
+    #
+    # HNSWNode is a class (reference type), so `get` returns a mutable
+    # reference. Back-edge mutations during `add` are reflected in the store
+    # directly without an explicit write-back — valid for in-memory stores.
+    # Future disk-backed stores will need explicit update calls instead.
+    module NodeStore
+      abstract def get(id : Int32) : HNSWNode
+      abstract def append(node : HNSWNode) : Nil
+      abstract def size : Int32
+    end
+
+    # In-memory NodeStore: nodes stored in a flat Array indexed by entry ID.
+    class MemoryNodeStore
+      include NodeStore
+
+      def initialize
+        @nodes = [] of HNSWNode
+      end
+
+      def get(id : Int32) : HNSWNode
+        @nodes[id]
+      end
+
+      def append(node : HNSWNode) : Nil
+        @nodes << node
+      end
+
+      def size : Int32
+        @nodes.size
+      end
+    end
+
     # A result returned from Index#search.
     record AnnResult, id : Int32, score : Float32
 
@@ -66,7 +105,7 @@ module Vecstolite
       DEFAULT_EF_CONSTRUCTION = 200
       DEFAULT_EF_SEARCH       =  50
 
-      @nodes : Array(HNSWNode)
+      @node_store : NodeStore
       @entry_point : Int32 # ID of the current graph entry point
       @max_layer : Int32   # highest layer currently in the graph
       @m : Int32
@@ -86,7 +125,7 @@ module Vecstolite
         @m_max0 = m * 2
         @ef_construction = ef_construction
         @ml = 1.0 / Math.log(m.to_f64)
-        @nodes = [] of HNSWNode
+        @node_store = MemoryNodeStore.new
         @entry_point = -1
         @max_layer = -1
         @rng = seed ? Random.new(seed) : Random.new
@@ -96,18 +135,18 @@ module Vecstolite
       # Public API
       # -------------------------------------------------------------------------
 
-      # Insert a vector with integer *id*.  *id* must equal @nodes.size (i.e. add
+      # Insert a vector with integer *id*.  *id* must equal @node_store.size (i.e. add
       # sequentially starting from 0, matching VectorStore's entry indices).
       def add(id : Int32, vector : Embedding) : Nil
         raise ArgumentError.new("Wrong dims: #{vector.size} != #{@dims}") if vector.size != @dims
-        raise ArgumentError.new("id must be sequential (expected #{@nodes.size}, got #{id})") if id != @nodes.size
+        raise ArgumentError.new("id must be sequential (expected #{@node_store.size}, got #{id})") if id != @node_store.size
 
         # Precalculate the reduced ef for higher layers
         reduced_ef_higher_layers = [@ef_construction // 4, @m].max
 
         node_layer = random_layer
         node = HNSWNode.new(vector, node_layer, @m)
-        @nodes << node
+        @node_store.append(node)
 
         if @entry_point == -1
           # First node — becomes the entry point at layer 0.
@@ -136,7 +175,7 @@ module Vecstolite
 
           # Wire back-edges (mutual connections).
           neighbours.each do |neighbor|
-            nb_node = @nodes[neighbor.id]
+            nb_node = @node_store.get(neighbor.id)
             unless nb_node.neighbours[layer].includes?(id)
               nb_node.neighbours[layer] << id
               # Prune if over limit.
@@ -173,7 +212,7 @@ module Vecstolite
           vector, neighbours = yield id
           node = HNSWNode.new(vector, 0, m)
           node.neighbours = neighbours
-          index.@nodes << node
+          index.@node_store.append(node)
         end
         index.reset_with(entry_point, max_layer)
         index
@@ -189,8 +228,8 @@ module Vecstolite
       #   end
       #   # persist meta[:entry_point] and meta[:max_layer]
       def export(& : Int32, Array(Array(Int32)) ->) : NamedTuple(entry_point: Int32, max_layer: Int32)
-        @nodes.each_with_index do |node, id|
-          yield id, node.neighbours
+        @node_store.size.times do |id|
+          yield id, @node_store.get(id).neighbours
         end
         {entry_point: @entry_point, max_layer: @max_layer}
       end
@@ -217,7 +256,7 @@ module Vecstolite
       end
 
       def size : Int32
-        @nodes.size
+        @node_store.size
       end
 
       protected def reset_with(entry_point : Int32, max_layer : Int32) : Nil
@@ -238,12 +277,12 @@ module Vecstolite
       # distance to *query*, repeat until no improvement.
       private def greedy_descend(query : Embedding, start : Int32, layer : Int32) : Int32
         best = start
-        best_d = distance(query, @nodes[start].vector)
+        best_d = distance(query, @node_store.get(start).vector)
 
         loop do
           changed = false
-          @nodes[best].neighbours[layer].each do |nb_id|
-            d = distance(query, @nodes[nb_id].vector)
+          @node_store.get(best).neighbours[layer].each do |nb_id|
+            d = distance(query, @node_store.get(nb_id).vector)
             if d < best_d
               best = nb_id
               best_d = d
@@ -271,7 +310,7 @@ module Vecstolite
         visited = Set(Int32).new
         visited << entry
 
-        entry_dist = distance(query, @nodes[entry].vector)
+        entry_dist = distance(query, @node_store.get(entry).vector)
         seed = Candidate.new(entry, entry_dist)
 
         candidates = BinaryHeap(Candidate).new { |this, that| this.dist <= that.dist }  # min-heap
@@ -284,11 +323,11 @@ module Vecstolite
           best = candidates.pop                      # O(log n) — nearest candidate
           break if best.dist > dynamic_set.peek.dist # O(1)     — worst in result set
 
-          @nodes[best.id].neighbours[layer].each do |nb_id|
+          @node_store.get(best.id).neighbours[layer].each do |nb_id|
             next if visited.includes?(nb_id)
             visited << nb_id
 
-            d = distance(query, @nodes[nb_id].vector)
+            d = distance(query, @node_store.get(nb_id).vector)
 
             if d < dynamic_set.peek.dist || dynamic_set.size < ef
               c = Candidate.new(nb_id, d)
@@ -324,7 +363,7 @@ module Vecstolite
         m : Int32,
       ) : Array(Int32)
         neighbour_ids
-          .map { |nb_id| {nb_id, distance(base_vec, @nodes[nb_id].vector)} }
+          .map { |nb_id| {nb_id, distance(base_vec, @node_store.get(nb_id).vector)} }
           .sort_by! { |_, dist| dist }
           .first(m)
           .map { |nb_id, _| nb_id }
