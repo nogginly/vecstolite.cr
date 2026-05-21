@@ -14,119 +14,185 @@ dependencies:
     github: nogginly/vecstolite.cr
 ```
 
-2. Run shards install
+2. Run `shards install`
 
 ## Usage
 
-### Embedder
+### Quick start
 
-#### OpenAI protocol
+The fastest way to get started is with a `StaticEmbedder` (no server or GPU required) and a persistent `SQLitePayloadVectorStore`. The static embedder runs entirely locally using a downloaded model file.
 
-Here's an example of an OpenAI protocol embedder configured to use `ollama` to provider the embedding model:
+```mermaid
+flowchart LR
+    T["Text"] --> E["Embedder: text &rarr; vector"]
+    E --> S["VectorStore\nadd / search"]
+    S --> DB[("SQLite3.db file")]
+    Q["Query text"] --> E2["Embedder"]
+    E2 --> S
+    S --> R["Top-k results\ntext &bull; score &bull; meta &bull; payload"]
+```
 
 ```cr
 require "vecstolite"
 
-# Setup an embedder
-embedder = Vecstolite::OpenAIEmbedder.new(
-  dimensions: 768,
-  base_url: "http://localhost:11434",
-  api_key: "ollama",
-  model: "nomic-embed-text-v2-moe",
-)
+# 1. Load a local embedding model (WordPiece-based safetensors format).
+#    Download from HuggingFace — see "Embedders" below for tested models.
+embedder = Vecstolite::StaticEmbedder.load("/path/to/model")
+
+# 2. Create a persistent store (or open an existing one).
+store = Vecstolite::SQLitePayloadVectorStore(String, String)
+          .create("my_store.db", embedder)
+# store = Vecstolite::SQLitePayloadVectorStore(String, String)
+#           .open("my_store.db", embedder)
+
+# 3. Add text.
+store.add("The sky is blue during a clear day.")
+store.add("Roses are red and violets are blue.")
+store.add("Crystal is a statically typed language with Ruby-like syntax.")
+store.add("A transformer is a type of neural network architecture.")
+
+# 4. Search.
+store.search("colour of the sky", k: 3).each do |r|
+  puts "[#{r.score.round(4)}] #{r.text}"
+end
+
+# 5. Close (flushes the graph to disk).
+store.close
 ```
 
-#### Static local
+That's it. On the next run, replace `.create` with `.open` and skip step 3.
 
-Alternatively you can use a "static" embedder that doesn't need a GPU or a server to generate embeddings:
+---
+
+### Embedders
+
+#### Static (local, no server)
 
 ```cr
 embedder = Vecstolite::StaticEmbedder.load(MODEL_PATH)
 ```
 
-The `MODEL_PATH` should point to a directory that contains two files: `model.safetensors` and `tokenizer.json`.
+`MODEL_PATH` must contain `model.safetensors` and `tokenizer.json`. Tested models (download from HuggingFace):
 
-Two static models have been tested, content files for which you can download from HuggingFace:
+- [`static-retrieval-mrl-en-v1`](https://huggingface.co/sentence-transformers/static-retrieval-mrl-en-v1) — English only, fast
+- [`static-similarity-mrl-multilingual-v1`](https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1) — multilingual
 
-1. `static-retrieval-mrl-en-v1` [here in HF](https://huggingface.co/sentence-transformers/static-retrieval-mrl-en-v1)
-2. `static-similarity-mrl-multilingual-v1` [here in HF](https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1)
+> Only WordPiece tokenizers are supported.
 
-> NOTE that `vecstolite` only supports WordPiece tokenizers.
+#### OpenAI-protocol (Ollama, OpenAI, etc.)
+
+```cr
+embedder = Vecstolite::OpenAIEmbedder.new(
+  dimensions: 768,
+  base_url:   "http://localhost:11434",
+  api_key:    "ollama",
+  model:      "nomic-embed-text-v2-moe",
+)
+```
+
+Any server that speaks the OpenAI embeddings API works here.
+
+---
 
 ### Vector stores
 
-#### In-memory indexed vector store
+|Store                           |Backing |Notes                                          |
+|--------------------------------|--------|-----------------------------------------------|
+|`MemoryVectorStore`             |RAM only|Simple; no persistence                         |
+|`SQLitePayloadVectorStore(M, P)`|SQLite3 |Recommended; typed meta + shared payloads      |
+|`SQLiteVectorStore`             |SQLite3 |**Deprecated** — use `SQLitePayloadVectorStore`|
 
-Here's a snippet to create an in-memory indexed vector store:
+#### `MemoryVectorStore`
 
 ```cr
-# Created an indexed in-memory vector store
 store = Vecstolite::MemoryVectorStore.new(embedder)
+store.add("The sky is blue.")
+results = store.search("sky colour", k: 3)
 ```
 
-#### SQLite3-backed Simple Vector Store
+#### `SQLitePayloadVectorStore(M, P)`
 
-Here's a snippet to create a persistent indexed vector store backed by SQLite3:
+`M` is per-embedding metadata; `P` is a shared payload (many embeddings can reference one payload). Both must be `JSON::Serializable`.
 
 ```cr
-# Created an indexed in-memory vector store
-store = Vecstolite::SQLiteVectorStore.create("my_vector_store.db", embedder)
+record Lang, code : String do
+  include JSON::Serializable
+end
+
+record Translation, en : String, fr : String do
+  include JSON::Serializable
+end
+
+store = Vecstolite::SQLitePayloadVectorStore(Lang, Translation)
+          .create("translations.db", embedder)
+
+# Store a shared payload, then index it in multiple languages.
+t = Translation.new(en: "The sky is blue.", fr: "Le ciel est bleu.")
+pid = store.add_payload(t)
+store.add(t.en, meta: Lang.new("en"), payload_id: pid)
+store.add(t.fr, meta: Lang.new("fr"), payload_id: pid)
+
+# Search returns the matched embedding plus its resolved payload.
+store.search("ciel", k: 2).each do |r|
+  puts "[#{r.score.round(4)}] (#{r.meta.try(&.code)}) #{r.text}"
+  puts "  → EN: #{r.payload.try(&.en)}"
+end
+
+store.close
 ```
-If one exists, use the `#open` method instead.
 
-#### SQLite3-backed Payload Vector Store
+##### Bulk insert
 
-The `SQLitePayloadVectorStore(M,P)` class is also backed by a SQLite DB, with the difference that you control the `meta` and `payload` types. As long as they are `JSON::Serializable`, the class takes care of the serialization and deserialization for you.
-
-This supports a separate API for adding payloads separately, and then referring to payloads when adding searchable text. Look at `samples/test04.cr` for a translation-related example.
-
-### Adding text
-
-#### Just add text to search for later
+For large ingest jobs, `bulk_add` wraps all inserts in a single transaction — significantly faster than individual `add` calls for 100+ entries:
 
 ```cr
-# Add text like so
-store.add "The sky is blue during a clear day."
-store.add "Roses are red and violets are blue."
-store.add "Crystal is a statically typed language with Ruby-like syntax."
-store.add "A transformer is a type of neural network architecture."
+store.bulk_add do |add|
+  chunks.each { |c| add.call(c.text, meta: c.lang, payload_id: c.pid) }
+end
 ```
 
-#### Add text with metadata per entry
+If the block raises, the transaction is rolled back and the store is left unchanged.
+
+##### Memory modes
 
 ```cr
-store.add("The sky is blue during a clear day.", meta: "en")
-store.add("Le ciel est bleu par temps clair.", meta: "fr")
-store.add("Der Himmel ist an einem klaren Tag blau", meta: "de")
+# Default (512 MB LRU cache — balanced):
+store = SQLitePayloadVectorStore(M, P).create(path, embedder)
+
+# Larger or smaller budget:
+store = SQLitePayloadVectorStore(M, P).create(path, embedder,
+          cache_max_bytes: 256 * Vecstolite::MB)
+
+# No cache — minimal RAM, slower search:
+store = SQLitePayloadVectorStore(M, P).create(path, embedder,
+          cache_max_bytes: nil)
+
+# After open, load the full index into RAM for maximum search speed:
+store.load_all_in_memory!
 ```
 
-#### Add text with typed meta-data and payload
-
-```cr
-store = Vecstolite::SQLitePayloadVectorStore(LangMeta, TranslationSet)
-            .open(DBNAME, embedder)
-set = TranslationSet.new(
-    en: "The sky is blue during a clear day.",
-    fr: "Le ciel est bleu par temps clair.",
-    de: "Der Himmel ist an einem klaren Tag blau.")
-pid = store.add_payload(set)
-store.add(set.en, meta: LangMeta.new("en"), payload_id: pid)
-store.add(set.fr, meta: LangMeta.new("fr"), payload_id: pid)
-store.add(set.de, meta: LangMeta.new("de"), payload_id: pid)
-```
+---
 
 ### Searching
 
 ```cr
-# Find top-k matches like so
-store.search("What is the color of the sky?", k: 3)
+results = store.search("What is the colour of the sky?", k: 3)
+results.each { |r| puts "[#{r.score.round(4)}] #{r.text}" }
 ```
 
-Result is an array of matches with at least `text` and `score` properties (per `VectorSearchResult`) and others depending on the vector store itself.
+`results` is an `Array` of objects that include `VectorSearchResult` (`text`, `score`). `SQLitePayloadVectorStore` results also carry `meta` and `payload`.
+
+To tune recall vs speed, pass `ef_search` explicitly (higher = better recall, slower):
+
+```cr
+results = store.search("sky colour", k: 5, ef_search: 100)
+```
+
+---
 
 ## Development
 
-See [DEVELOPMENT](./DEVELOPMENT.md) for how to build `vecstolite` and run the samples.
+See [DEVELOPMENT.md](./DEVELOPMENT.md) for how to build, run the samples, and understand the internals.
 
 ## Contributions, by invitation!
 
