@@ -92,7 +92,7 @@ jobs:
         run: |
           mkdir bin -ErrorAction SilentlyContinue
           mkdir bin\release -ErrorAction SilentlyContinue
-          choco install sqlite --params "/NoTools"
+          choco install sqlite --no-progress --params "/NoTools"
 
           $sqliteToolsPath = "C:\ProgramData\chocolatey\lib\SQLite\tools"
 
