@@ -97,11 +97,15 @@ module Vecstolite
     # Create a new store at *path*.
     #
     # *cache_max_bytes* controls the node cache budget (see `open` for details).
+    # *hnsw_seed* fixes the random seed for HNSW layer assignment, producing a
+    # reproducible graph topology. Useful for tests and debugging. Omit (or pass
+    # `nil`) for the default entropy-seeded behaviour.
     def self.create(path : String,
                     embedder : VectorEmbedder,
                     m = DEFAULT_M,
                     ef_construction = DEFAULT_EF_CONSTRUCTION,
                     cache_max_bytes : Int64? = DEFAULT_CACHE_MAX_BYTES,
+                    hnsw_seed : Int32? = nil,
                     cache_ttl : Time::Span? = nil,
                     cache_purge_period : Time::Span? = nil) : self
       raise Error.new("Database '#{path}' already exists.") if File.exists?(path)
@@ -110,6 +114,7 @@ module Vecstolite
         readonly: false,
         m: m, ef_construction: ef_construction,
         cache_max_bytes: cache_max_bytes,
+        hnsw_seed: hnsw_seed,
         cache_ttl: cache_ttl,
         cache_purge_period: cache_purge_period)
       store.bootstrap
@@ -359,6 +364,7 @@ module Vecstolite
     @m : Int32
     @ef_construction : Int32
     @cache_max_bytes : Int64?
+    @hnsw_seed : Int32?
 
     @entry_cache : Cache(Int32, CachedEntry(M))
     @cache_last_purged = Time.instant
@@ -368,9 +374,11 @@ module Vecstolite
                            @readonly, @m : Int32 = DEFAULT_M,
                            @ef_construction : Int32 = DEFAULT_EF_CONSTRUCTION,
                            cache_max_bytes : Int64? = DEFAULT_CACHE_MAX_BYTES,
+                           hnsw_seed : Int32? = nil,
                            cache_ttl : Time::Span? = nil,
                            @cache_purge_period : Time::Span? = nil)
       @cache_max_bytes = cache_max_bytes
+      @hnsw_seed = hnsw_seed
       @entry_cache = Cache(Int32, CachedEntry(M)).new(cache_ttl)
       @node_store = make_node_store
       @index = new_index
@@ -508,7 +516,7 @@ module Vecstolite
         fresh_store = HNSW::MemoryNodeStore.new
         fresh_index = HNSW::Index.new(
           dims: @embedder.dimensions, m: @m, ef_construction: @ef_construction,
-          node_store: fresh_store)
+          node_store: fresh_store, seed: @hnsw_seed)
         vectors.each_with_index { |v, i| fresh_index.add(id: i, vector: v) }
         @node_store = fresh_store
         @index = fresh_index
@@ -583,7 +591,7 @@ module Vecstolite
 
     private def new_index : HNSW::Index
       HNSW::Index.new(dims: @embedder.dimensions, m: @m, ef_construction: @ef_construction,
-        node_store: @node_store)
+        node_store: @node_store, seed: @hnsw_seed)
     end
 
     private def purge_expired_from_cache : Nil

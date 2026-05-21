@@ -160,8 +160,8 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
     end
 
     it "returns the same search results as individual adds" do
-      # Reference: individual adds
-      ref_store = Store.create(db_file_name, embedder)
+      # Reference: individual adds (fixed seed for reproducible graph topology)
+      ref_store = Store.create(db_file_name, embedder, hnsw_seed: 42)
       SENTENCES.each_with_index do |s, i|
         ref_store.add(s, meta: Lang.new(i.even? ? "en" : "fr"))
       end
@@ -169,8 +169,8 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
       ref_store.close
       File.delete?(db_file_name)
 
-      # Bulk add
-      bulk_store = Store.create(db_file_name, embedder)
+      # Bulk add (same fixed seed)
+      bulk_store = Store.create(db_file_name, embedder, hnsw_seed: 42)
       bulk_store.bulk_add do |add|
         SENTENCES.each_with_index do |s, i|
           add.call(s, meta: Lang.new(i.even? ? "en" : "fr"))
