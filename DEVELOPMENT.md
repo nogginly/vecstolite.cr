@@ -41,8 +41,6 @@ To run the benchmark you will need to inputs:
 
 The benchmark adds all the sentences, and then randomly samples 10% to search.
 
----
-
 ## How Vecstolite works
 
 This section is for contributors. It describes the internal design in enough depth to orient an experienced Crystal developer who is new to the codebase.
@@ -132,6 +130,7 @@ classDiagram
         +cache_hits() Int64
         +cache_misses() Int64
         +cache_evictions() Int64
+        +cache_size() Int32
     }
     class MemoryNodeStore {
         -nodes Array~HNSWNode~
@@ -210,7 +209,9 @@ flowchart TD
 
     RDY --> ADD["add(text)"]
     ADD --> TX["DB transaction\nINSERT entry + node\nHNSW.add + write_back\nupdate_graph_meta"]
-    TX --> RDY
+    TX -->|success| RDY
+    TX -->|exception| ARB["rollback\nrebuild_after_rollback\n(LRU/Disk only)"]
+    ARB --> RDY
 
     RDY --> BA["bulk_add { |batch| … }"]
     BA --> BTX["single DB transaction\nbatch.add + batch.add_payload\nwrite_backs + update_graph_meta"]
@@ -223,7 +224,7 @@ flowchart TD
     SG --> DC["db.close"]
 ```
 
-**`add`** embeds the text, inserts into `vecsto_entries` and the HNSW index within a single transaction. For LRU/Disk stores, `HNSW::Index#add` calls `write_back` after each back-edge mutation, writing neighbour changes to `vecsto_nodes` in the same transaction. `update_graph_meta` is called at the end of each transaction so the DB is always crash-recoverable.
+**`add`** embeds the text, inserts into `vecsto_entries` and the HNSW index within a single transaction. For LRU/Disk stores, `HNSW::Index#add` calls `write_back` after each back-edge mutation, writing neighbour changes to `vecsto_nodes` in the same transaction. `update_graph_meta` is called at the end of each transaction so the DB is always crash-recoverable. If the transaction fails, `rebuild_after_rollback` restores the in-memory node store and index to match the rolled-back DB state, preventing stale LRU cache entries from corrupting subsequent adds.
 
 **`bulk_add`** opens one transaction for the entire block. All `add_within_bulk` calls (entry inserts + index mutations) happen inside it. On success: one `fsync`. On exception: transaction rolls back, `rebuild_after_rollback` restores in-memory state to match.
 
@@ -259,6 +260,8 @@ One BLOB per node row in `vecsto_nodes`. This allows a single DB read to fetch a
 - Entry rows and node rows are written in the same transaction, so the DB is always self-consistent at the row level.
 - The HNSW graph topology (`@entry_point`, `@max_layer`, `graph_saved = 1`) is updated in the same transaction as the node write (LRU/Disk) or at `save_graph`/`close` (Memory). If the process crashes before `save_graph`, `load_from_db` falls back to `rebuild_index_from_entries` — slower but always correct.
 
+---
+
 ## Design Decisions
 
 Decisions that may look unconventional or prompt a "why didn't they just..." from a new contributor.
@@ -286,8 +289,6 @@ When `bulk_add` fails and the DB transaction rolls back, the in-memory HNSW inde
 ### Thread safety is the caller's responsibility
 
 No internal locking. Concurrent access to a store instance must be serialised by the application (e.g. with a `Mutex`). Adding a mutex inside the store would protect individual method calls but not compound operations (`size` + `add` atomically, for example), giving a false sense of safety. The application always knows its own concurrency shape; the store does not.
-
----
 
 ## Thread safety
 

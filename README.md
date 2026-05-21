@@ -24,12 +24,12 @@ The fastest way to get started is with a `StaticEmbedder` (no server or GPU requ
 
 ```mermaid
 flowchart LR
-    T["Text"] --> E["Embedder: text &rarr; vector"]
+    T["Text"] --> E["Embedder\ntext → vector"]
     E --> S["VectorStore\nadd / search"]
-    S --> DB[("SQLite3.db file")]
+    S --> DB[("SQLite3\n.db file")]
     Q["Query text"] --> E2["Embedder"]
     E2 --> S
-    S --> R["Top-k results\ntext &bull; score &bull; meta &bull; payload"]
+    S --> R["Top-k results\ntext · score · meta · payload"]
 ```
 
 ```cr
@@ -62,8 +62,6 @@ store.close
 
 That's it. On the next run, replace `.create` with `.open` and skip step 3.
 
----
-
 ### Embedders
 
 #### Static (local, no server)
@@ -91,8 +89,6 @@ embedder = Vecstolite::OpenAIEmbedder.new(
 ```
 
 Any server that speaks the OpenAI embeddings API works here.
-
----
 
 ### Vector stores
 
@@ -161,21 +157,19 @@ If the block raises, the transaction is rolled back — no orphaned payload rows
 
 ```cr
 # Default (512 MB LRU cache — balanced):
-store = SQLitePayloadVectorStore(M, P).create(path, embedder)
+store = Vecstolite::SQLitePayloadVectorStore(M, P).create(path, embedder)
 
 # Larger or smaller budget:
-store = SQLitePayloadVectorStore(M, P).create(path, embedder,
+store = Vecstolite::SQLitePayloadVectorStore(M, P).create(path, embedder,
           cache_max_bytes: 256 * Vecstolite::MB)
 
 # No cache — minimal RAM, slower search:
-store = SQLitePayloadVectorStore(M, P).create(path, embedder,
+store = Vecstolite::SQLitePayloadVectorStore(M, P).create(path, embedder,
           cache_max_bytes: nil)
 
 # After open, load the full index into RAM for maximum search speed:
 store.load_all_in_memory!
 ```
-
----
 
 ### Searching
 
@@ -191,8 +185,6 @@ To tune recall vs speed, pass `ef_search` explicitly (higher = better recall, sl
 ```cr
 results = store.search("sky colour", k: 5, ef_search: 100)
 ```
-
----
 
 ## Development
 
