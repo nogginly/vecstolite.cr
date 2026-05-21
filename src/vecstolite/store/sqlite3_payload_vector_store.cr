@@ -55,14 +55,24 @@ module Vecstolite
       include VectorSearchResult
     end
 
-    # Yielded by `bulk_add` to allow many entries to be added within a single
-    # database transaction, reducing per-add fsync overhead.
-    class Adder(M, P)
+    # Yielded by `bulk_add` to allow many entries and payloads to be added
+    # within a single database transaction, reducing per-add fsync overhead.
+    # The API mirrors the store's own methods — any developer familiar with
+    # the store needs no extra learning.
+    class Batch(M, P)
       protected def initialize(@store : SQLitePayloadVectorStore(M, P))
       end
 
-      def call(text : String, meta : M? = nil, payload_id : Int64? = nil) : Nil
+      # Add and index *text*. Mirrors `SQLitePayloadVectorStore#add`.
+      def add(text : String, meta : M? = nil, payload_id : Int64? = nil) : Nil
         @store.add_within_bulk(text, meta, payload_id)
+      end
+
+      # Store a shared payload and return its id. Mirrors `SQLitePayloadVectorStore#add_payload`.
+      # The insert is part of the enclosing `bulk_add` transaction — if the block
+      # raises, the payload is rolled back along with all entries.
+      def add_payload(payload : P) : Int64
+        @store.add_payload_within_bulk(payload)
       end
     end
 
@@ -84,7 +94,12 @@ module Vecstolite
                   cache_ttl : Time::Span? = nil,
                   cache_purge_period : Time::Span? = nil) : self
       raise Error.new("Database '#{path}' does not exist.") unless File.exists?(path)
-      db = DB.open("sqlite3://#{path}")
+      # DB.connect rather than DB.open: SQLite is single-writer; a connection pool
+      # offers no benefit and complicates transaction safety — all exec calls inside
+      # a transaction block must share the same connection. A single DB::Connection
+      # guarantees this without threading tx.connection through every call site
+      # (including deep into NodeStore). See DEVELOPMENT.md § Design Decisions.
+      db = DB.connect("sqlite3://#{path}")
       store = new(embedder, db, path,
         readonly: readonly,
         cache_max_bytes: cache_max_bytes,
@@ -109,7 +124,8 @@ module Vecstolite
                     cache_ttl : Time::Span? = nil,
                     cache_purge_period : Time::Span? = nil) : self
       raise Error.new("Database '#{path}' already exists.") if File.exists?(path)
-      db = DB.open("sqlite3://#{path}")
+      # See open() above for why DB.connect is used instead of DB.open.
+      db = DB.connect("sqlite3://#{path}")
       store = new(embedder, db, path,
         readonly: false,
         m: m, ef_construction: ef_construction,
@@ -221,6 +237,12 @@ module Vecstolite
       result
     end
 
+    # Called by Batch#add_payload — skips the transaction wrapper.
+    protected def add_payload_within_bulk(payload : P) : Int64
+      result = @db.exec "INSERT INTO #{TABLE_PAYLOADS} (content) VALUES (?)", payload.to_json
+      result.last_insert_id
+    end
+
     # -------------------------------------------------------------------------
     # Mutations
     # -------------------------------------------------------------------------
@@ -245,32 +267,36 @@ module Vecstolite
         @index.add(id: id, vector: vector)
         update_graph_meta if @node_store.fully_persisted?
       end
-      @entry_cache.put(id, CachedEntry.new(text, meta, payload_id))
+      @entry_cache.put(id, CachedEntry(M).new(text, meta.as(M?), payload_id))
     end
 
-    # Add many entries within a **single database transaction**, dramatically
-    # reducing per-entry fsync overhead for bulk ingest.
+    # Add many entries and payloads within a **single database transaction**,
+    # dramatically reducing per-entry fsync overhead for bulk ingest.
     #
-    # The block receives an `Adder` whose `call` method mirrors `add`'s
-    # signature. If the block raises, the transaction is rolled back and no
-    # entries are persisted.
+    # The block receives a `Batch` whose `add` and `add_payload` methods mirror
+    # the store's own API. If the block raises, the transaction is rolled back
+    # and the store is left unchanged — no orphaned payload rows, no partial index.
     #
     # Example:
     # ```
-    # store.bulk_add do |add|
-    #   chunks.each { |c| add.call(c.text, meta: c.lang, payload_id: pid) }
+    # store.bulk_add do |batch|
+    #   inputs.each do |input|
+    #     pid = batch.add_payload(input.translation)
+    #     batch.add(input.en, meta: Lang.new("en"), payload_id: pid)
+    #     batch.add(input.fr, meta: Lang.new("fr"), payload_id: pid)
+    #   end
     # end
     # ```
-    def bulk_add(& : Adder(M, P) ->) : Nil
+    def bulk_add(& : Batch(M, P) ->) : Nil
       raise Error.new("Store is closed") if @closed
       raise Error.new("Store is readonly") if @readonly
       purge_expired_from_cache
 
       id_before = @index.size
-      adder = Adder(M, P).new(self)
+      batch = Batch(M, P).new(self)
       begin
         @db.transaction do
-          yield adder
+          yield batch
           update_graph_meta if @node_store.fully_persisted?
         end
       rescue ex
@@ -355,7 +381,7 @@ module Vecstolite
       payload_id : Int64?
 
     @readonly : Bool
-    @db : DB::Database
+    @db : DB::Connection
     @path : String
     @embedder : VectorEmbedder
     @node_store : HNSW::NodeStore
@@ -370,7 +396,7 @@ module Vecstolite
     @cache_last_purged = Time.instant
     @cache_purge_period : Time::Span?
 
-    private def initialize(@embedder : VectorEmbedder, @db : DB::Database, @path : String,
+    private def initialize(@embedder : VectorEmbedder, @db : DB::Connection, @path : String,
                            @readonly, @m : Int32 = DEFAULT_M,
                            @ef_construction : Int32 = DEFAULT_EF_CONSTRUCTION,
                            cache_max_bytes : Int64? = DEFAULT_CACHE_MAX_BYTES,
@@ -452,14 +478,14 @@ module Vecstolite
       load_from_db(meta)
     end
 
-    # Called by Adder — skips the transaction wrapper (uses bulk_add's transaction).
+    # Called by Batch#add — skips the transaction wrapper (uses bulk_add's transaction).
     protected def add_within_bulk(text : String, meta : M? = nil, payload_id : Int64? = nil) : Nil
       vector = @embedder.embed(text)
       id = @index.size
       @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector, meta, payload_id) VALUES (?, ?, ?, ?, ?)",
         id, text, pack_vector(vector), meta.try(&.to_json), payload_id
       @index.add(id: id, vector: vector)
-      @entry_cache.put(id, CachedEntry.new(text, meta, payload_id))
+      @entry_cache.put(id, CachedEntry(M).new(text, meta.as(M?), payload_id))
     end
 
     private def load_from_db(meta : Hash(String, Int32)) : Nil

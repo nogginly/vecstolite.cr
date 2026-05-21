@@ -68,7 +68,7 @@ module Vecstolite
     @misses = 0_i64
     @evictions = 0_i64
 
-    protected def initialize(@db : DB::Database,
+    protected def initialize(@db : DB::Connection,
                              @dims : Int32,
                              @table_entries : String,
                              @table_nodes : String,
@@ -261,7 +261,7 @@ module Vecstolite
   class DiskNodeStore
     include HNSW::NodeStore
 
-    protected def initialize(@db : DB::Database,
+    protected def initialize(@db : DB::Connection,
                              @dims : Int32,
                              @table_entries : String,
                              @table_nodes : String)

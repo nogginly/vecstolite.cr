@@ -143,15 +143,19 @@ store.close
 
 ##### Bulk insert
 
-For large ingest jobs, `bulk_add` wraps all inserts in a single transaction — significantly faster than individual `add` calls for 100+ entries:
+For large ingest jobs, `bulk_add` wraps all inserts in a single transaction — significantly faster than individual `add` calls for 100+ entries. Payloads can be created inside the block too, so everything commits or rolls back as one unit:
 
 ```cr
-store.bulk_add do |add|
-  chunks.each { |c| add.call(c.text, meta: c.lang, payload_id: c.pid) }
+store.bulk_add do |batch|
+  inputs.each do |input|
+    pid = batch.add_payload(input.translation)
+    batch.add(input.en, meta: Lang.new("en"), payload_id: pid)
+    batch.add(input.fr, meta: Lang.new("fr"), payload_id: pid)
+  end
 end
 ```
 
-If the block raises, the transaction is rolled back and the store is left unchanged.
+If the block raises, the transaction is rolled back — no orphaned payload rows, no partial index.
 
 ##### Memory modes
 

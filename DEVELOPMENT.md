@@ -212,8 +212,8 @@ flowchart TD
     ADD --> TX["DB transaction\nINSERT entry + node\nHNSW.add + write_back\nupdate_graph_meta"]
     TX --> RDY
 
-    RDY --> BA["bulk_add { |add| … }"]
-    BA --> BTX["single DB transaction\nall adds + write_backs\nupdate_graph_meta"]
+    RDY --> BA["bulk_add { |batch| … }"]
+    BA --> BTX["single DB transaction\nbatch.add + batch.add_payload\nwrite_backs + update_graph_meta"]
     BTX -->|success| RDY
     BTX -->|exception| RB["rollback\nrebuild_after_rollback\nrestore in-memory state"]
     RB --> RDY
@@ -259,9 +259,39 @@ One BLOB per node row in `vecsto_nodes`. This allows a single DB read to fetch a
 - Entry rows and node rows are written in the same transaction, so the DB is always self-consistent at the row level.
 - The HNSW graph topology (`@entry_point`, `@max_layer`, `graph_saved = 1`) is updated in the same transaction as the node write (LRU/Disk) or at `save_graph`/`close` (Memory). If the process crashes before `save_graph`, `load_from_db` falls back to `rebuild_index_from_entries` — slower but always correct.
 
-### Thread safety
+## Design Decisions
 
-Single-threaded only. There is no internal locking. For concurrent access, wrap the store behind an application-level `Mutex`.
+Decisions that may look unconventional or prompt a "why didn't they just..." from a new contributor.
+
+### `DB.connect` instead of `DB.open`
+
+The Crystal DB documentation recommends using `DB::Database` (via `DB.open`) with a connection pool and threading `cnn = tx.connection` through every call inside a transaction block. We use `DB.connect` instead, which returns a single `DB::Connection` with no pool.
+
+**Why:** SQLite is single-writer by design — a connection pool offers no concurrency benefit. More importantly, our transaction blocks call deep into `HNSW::Index#add` → `NodeStore#write_back` → `@db.exec`. Threading `tx.connection` through that entire call stack would couple the `NodeStore` abstraction to DB internals it has no business knowing about. A single `DB::Connection` ensures all exec calls automatically share the same connection and therefore the same transaction, with no API pollution.
+
+The `tx.connection` pattern is designed for multi-connection databases (PostgreSQL, MySQL) where the pool is actually used. For SQLite it would be correct but unnecessarily invasive.
+
+### `MemoryNodeStore` as the default for `SQLiteVectorStore`
+
+`SQLiteVectorStore` (deprecated) uses `MemoryNodeStore` exclusively — no LRU or disk option. This is intentional: `SQLiteVectorStore` is being phased out in favour of `SQLitePayloadVectorStore`, so adding caching infrastructure to it would be wasted effort. New code should use `SQLitePayloadVectorStore`.
+
+### Vectors stored twice in the original design (now fixed)
+
+Prior to the `NodeStore` refactor (v0.5.2), embedding vectors were stored twice in memory: once in `@entry_embeddings` (an array of `EntryVector` structs) and again inside each `HNSWNode`. The `NodeStore` abstraction eliminated this by making the node the single owner of both vector and neighbour data. `Slice(Float32)` is a struct (pointer + size, 16 bytes), so assignment copies the struct only — not the underlying float buffer — but the redundant struct array still wasted memory and complicated ownership.
+
+### `bulk_add` rollback rebuilds the in-memory index
+
+When `bulk_add` fails and the DB transaction rolls back, the in-memory HNSW index and `NodeStore` have already been partially mutated. Rather than attempting to undo individual graph mutations (which would require tracking every back-edge change), `rebuild_after_rollback` discards the in-memory state entirely and reconstructs it from the now-clean database. This is O(n) in the pre-bulk entry count but correct by construction — the DB is the source of truth after a rollback.
+
+### Thread safety is the caller's responsibility
+
+No internal locking. Concurrent access to a store instance must be serialised by the application (e.g. with a `Mutex`). Adding a mutex inside the store would protect individual method calls but not compound operations (`size` + `add` atomically, for example), giving a false sense of safety. The application always knows its own concurrency shape; the store does not.
+
+---
+
+## Thread safety
+
+Single-threaded only. See Design Decisions above.
 
 ## Contributions
 

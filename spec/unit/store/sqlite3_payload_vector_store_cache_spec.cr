@@ -150,9 +150,9 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
   describe "#bulk_add" do
     it "adds all entries within one call" do
       store = Store.create(db_file_name, embedder)
-      store.bulk_add do |add|
+      store.bulk_add do |batch|
         SENTENCES.each_with_index do |s, i|
-          add.call(s, meta: Lang.new(i.even? ? "en" : "fr"))
+          batch.add(s, meta: Lang.new(i.even? ? "en" : "fr"))
         end
       end
       expect(store.size).to eq(SENTENCES.size)
@@ -171,9 +171,9 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
 
       # Bulk add (same fixed seed)
       bulk_store = Store.create(db_file_name, embedder, hnsw_seed: 42)
-      bulk_store.bulk_add do |add|
+      bulk_store.bulk_add do |batch|
         SENTENCES.each_with_index do |s, i|
-          add.call(s, meta: Lang.new(i.even? ? "en" : "fr"))
+          batch.add(s, meta: Lang.new(i.even? ? "en" : "fr"))
         end
       end
       bulk_results = bulk_store.search("blue sky", k: 3).map(&.text)
@@ -188,9 +188,9 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
       size_before = store.size
 
       expect do
-        store.bulk_add do |add|
-          add.call("Entry one.", meta: Lang.new("en"))
-          add.call("Entry two.", meta: Lang.new("fr"))
+        store.bulk_add do |batch|
+          batch.add("Entry one.", meta: Lang.new("en"))
+          batch.add("Entry two.", meta: Lang.new("fr"))
           raise "simulated failure"
         end
       end.to raise_error(Exception, "simulated failure")
@@ -201,9 +201,9 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
 
     it "persists correctly across close and reopen" do
       store = Store.create(db_file_name, embedder)
-      store.bulk_add do |add|
+      store.bulk_add do |batch|
         SENTENCES.each_with_index do |s, i|
-          add.call(s, meta: Lang.new(i.even? ? "en" : "fr"))
+          batch.add(s, meta: Lang.new(i.even? ? "en" : "fr"))
         end
       end
       store.close
@@ -215,16 +215,31 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
       store2.close
     end
 
-    it "works with payloads" do
+    it "works with payloads added within the batch" do
       store = Store.create(db_file_name, embedder)
-      pid = store.add_payload(Translation.new(en: "The sky is blue", fr: "Le ciel est bleu"))
-      store.bulk_add do |add|
-        add.call("The sky is blue.", meta: Lang.new("en"), payload_id: pid)
-        add.call("Le ciel est bleu.", meta: Lang.new("fr"), payload_id: pid)
+      store.bulk_add do |batch|
+        pid = batch.add_payload(Translation.new(en: "The sky is blue", fr: "Le ciel est bleu"))
+        batch.add("The sky is blue.", meta: Lang.new("en"), payload_id: pid)
+        batch.add("Le ciel est bleu.", meta: Lang.new("fr"), payload_id: pid)
       end
       results = store.search("sky colour", k: 2)
       results.each { |r| expect(r.payload).not_to be_nil }
       store.close
+    end
+
+    it "rolls back add_payload along with entries on error" do
+      store = Store.create(db_file_name, embedder)
+      expect do
+        store.bulk_add do |batch|
+          batch.add_payload(Translation.new(en: "Should not persist", fr: "Ne doit pas persister"))
+          raise "simulated failure"
+        end
+      end.to raise_error(Exception, "simulated failure")
+      # Reopen and confirm no payload was saved.
+      store.close
+      store2 = Store.open(db_file_name, embedder)
+      expect(store2.get_payload(1_i64)).to be_nil
+      store2.close
     end
   end
 
@@ -299,8 +314,258 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
   end
 
   # -------------------------------------------------------------------------
-  # Vecstolite::MB / KB / GB constants
+  # edge cases
   # -------------------------------------------------------------------------
+
+  describe "edge cases" do
+    describe "k > size" do
+      it "returns at most size results without raising" do
+        store = Store.create(db_file_name, embedder)
+        store.add("The sky is blue.", meta: Lang.new("en"))
+        store.add("Le ciel est bleu.", meta: Lang.new("fr"))
+        results = store.search("sky", k: 100)
+        expect(results.size).to be <= 2
+        store.close
+      end
+    end
+
+    describe "empty store" do
+      it "search on empty store returns empty array" do
+        store = Store.create(db_file_name, embedder)
+        expect(store.search("sky", k: 3)).to be_empty
+        store.close
+      end
+
+      it "load_all_in_memory! on empty store is a no-op" do
+        store = Store.create(db_file_name, embedder)
+        expect { store.load_all_in_memory! }.not_to raise_error
+        expect(store.size).to eq(0)
+        store.close
+      end
+
+      it "bulk_add rollback on empty store leaves size at zero" do
+        store = Store.create(db_file_name, embedder)
+        expect do
+          store.bulk_add do |batch|
+            batch.add("Entry one.", meta: Lang.new("en"))
+            raise "simulated failure"
+          end
+        end.to raise_error(Exception, "simulated failure")
+        expect(store.size).to eq(0)
+        store.close
+      end
+    end
+
+    describe "sequential bulk_add calls" do
+      it "second bulk_add builds on top of first correctly" do
+        store = Store.create(db_file_name, embedder, hnsw_seed: 42)
+        store.bulk_add do |batch|
+          SENTENCES.first(4).each_with_index { |s, i| batch.add(s, meta: Lang.new(i.even? ? "en" : "fr")) }
+        end
+        size_after_first = store.size
+
+        store.bulk_add do |batch|
+          SENTENCES.last(4).each_with_index { |s, i| batch.add(s, meta: Lang.new(i.even? ? "en" : "fr")) }
+        end
+
+        expect(store.size).to eq(SENTENCES.size)
+        expect(store.size).to eq(size_after_first + 4)
+        results = store.search("blue sky", k: 3)
+        expect(results.size).to eq(3)
+        store.close
+      end
+
+      it "second bulk_add is searchable after reopen" do
+        store = Store.create(db_file_name, embedder)
+        store.bulk_add do |batch|
+          SENTENCES.first(4).each_with_index { |s, i| batch.add(s, meta: Lang.new(i.even? ? "en" : "fr")) }
+        end
+        store.bulk_add do |batch|
+          SENTENCES.last(4).each_with_index { |s, i| batch.add(s, meta: Lang.new(i.even? ? "en" : "fr")) }
+        end
+        store.close
+
+        store2 = Store.open(db_file_name, embedder)
+        expect(store2.size).to eq(SENTENCES.size)
+        expect(store2.search("blue sky", k: 3).size).to eq(3)
+        store2.close
+      end
+    end
+
+    describe "add after rolled-back bulk_add" do
+      it "store remains usable after rollback" do
+        store = Store.create(db_file_name, embedder)
+        store.add("Before bulk.", meta: Lang.new("en"))
+
+        expect do
+          store.bulk_add do |batch|
+            batch.add("Will be rolled back.", meta: Lang.new("en"))
+            raise "simulated failure"
+          end
+        end.to raise_error(Exception, "simulated failure")
+
+        # Store must still accept new entries after rollback.
+        store.add("After rollback.", meta: Lang.new("en"))
+        expect(store.size).to eq(2)
+        results = store.search("rollback", k: 2)
+        expect(results.map(&.text)).to contain("After rollback.")
+        store.close
+      end
+    end
+
+    describe "meta round-trip fidelity" do
+      it "meta values survive add, search, close, reopen" do
+        store = Store.create(db_file_name, embedder)
+        store.add("The sky is blue.", meta: Lang.new("en"))
+        store.add("Le ciel est bleu.", meta: Lang.new("fr"))
+        store.close
+
+        store2 = Store.open(db_file_name, embedder)
+        results = store2.search("sky", k: 2)
+        codes = results.map { |r| r.meta.try(&.code) }.compact.sort
+        expect(codes).to contain("en")
+        expect(codes).to contain("fr")
+        store2.close
+      end
+
+      it "nil meta round-trips correctly" do
+        store = Store.create(db_file_name, embedder)
+        store.add("No meta here.")
+        store.close
+
+        store2 = Store.open(db_file_name, embedder)
+        results = store2.search("no meta", k: 1)
+        expect(results.first.meta).to be_nil
+        store2.close
+      end
+    end
+
+    describe "LRU eviction during add" do
+      it "evictions occur when cache budget is exceeded during bulk add" do
+        # Budget of 1 byte forces eviction on every cache insert during add.
+        store = Store.create(db_file_name, embedder, cache_max_bytes: 1_i64)
+        store.bulk_add do |batch|
+          SENTENCES.each_with_index { |s, i| batch.add(s, meta: Lang.new(i.even? ? "en" : "fr")) }
+        end
+        expect(store.stats[:cache_evictions]).to be > 0
+        # Search must still return correct results despite heavy eviction.
+        results = store.search("blue sky", k: 3)
+        expect(results.size).to eq(3)
+        store.close
+      end
+    end
+  end
+
+  # -------------------------------------------------------------------------
+  # higher-volume tests (~500 entries)
+  # -------------------------------------------------------------------------
+
+  describe "higher volume (500 entries)" do
+    # Generate a deterministic corpus of 500 varied sentences using a small
+    # set of templates and word substitutions.
+    let(corpus) do
+      subjects = ["The sky", "The ocean", "The grass", "The sun", "The moon",
+                  "The wind", "The rain", "The snow", "The forest", "The river"]
+      verbs = ["is", "appears", "looks", "feels", "seems"]
+      adjectives = ["blue", "green", "bright", "warm", "cold", "dark",
+                    "deep", "clear", "vast", "calm"]
+      Array(String).new(500) do |i|
+        s = subjects[i % subjects.size]
+        v = verbs[(i // subjects.size) % verbs.size]
+        a = adjectives[(i // (subjects.size * verbs.size)) % adjectives.size]
+        "#{s} #{v} #{a} (#{i})."
+      end
+    end
+
+    let(populated_db) do
+      store = Store.create(db_file_name, embedder, hnsw_seed: 1)
+      store.bulk_add do |batch|
+        corpus.each { |s| batch.add(s) }
+      end
+      store.close
+      db_file_name
+    end
+
+    {% for mode in [:lru, :disk, :memory] %}
+      context "{{ mode.id }} mode" do
+        it "returns k results and all are from the corpus" do
+          populated_db # ensure DB is built
+
+          {% if mode == :lru %}
+            store = Store.open(db_file_name, embedder)
+          {% elsif mode == :disk %}
+            store = Store.open(db_file_name, embedder, cache_max_bytes: nil)
+          {% else %}
+            store = Store.open(db_file_name, embedder)
+            store.load_all_in_memory!
+          {% end %}
+
+          expect(store.size).to eq(500)
+          results = store.search("blue sky", k: 10)
+          expect(results.size).to eq(10)
+          results.each { |r| expect(corpus).to contain(r.text) }
+          store.close
+        end
+
+        it "all three modes return the same top-10 results" do
+          populated_db
+
+          lru_store = Store.open(db_file_name, embedder)
+          lru_results = lru_store.search("warm bright sun", k: 10).map(&.text)
+          lru_store.close
+
+          {% if mode == :disk %}
+            other_store = Store.open(db_file_name, embedder, cache_max_bytes: nil)
+          {% elsif mode == :memory %}
+            other_store = Store.open(db_file_name, embedder)
+            other_store.load_all_in_memory!
+          {% else %}
+            other_store = Store.open(db_file_name, embedder)
+          {% end %}
+
+          other_results = other_store.search("warm bright sun", k: 10).map(&.text)
+          other_store.close
+
+          expect(other_results).to eq(lru_results)
+        end
+      end
+    {% end %}
+
+    it "bulk_add 500 entries persists correctly across close/reopen" do
+      populated_db
+      store = Store.open(db_file_name, embedder)
+      expect(store.size).to eq(500)
+      results = store.search("deep ocean", k: 5)
+      expect(results.size).to eq(5)
+      results.each { |r| expect(corpus).to contain(r.text) }
+      store.close
+    end
+
+    it "LRU cache with small budget handles 500 entries without error" do
+      # Budget for ~10 nodes — forces constant eviction throughout the search.
+      budget = 10_i64 * (embedder.dimensions * 4 + 128)
+      store = Store.create(db_file_name, embedder, cache_max_bytes: budget)
+      store.bulk_add do |batch|
+        corpus.each { |s| batch.add(s) }
+      end
+      results = store.search("cold dark river", k: 5)
+      expect(results.size).to eq(5)
+      expect(store.stats[:cache_evictions]).to be > 0
+      store.close
+    end
+
+    it "stats show expected cache behaviour at volume" do
+      populated_db
+      store = Store.open(db_file_name, embedder)
+      store.search("blue sky", k: 10)
+      store.search("blue sky", k: 10) # second search primes hits
+      s = store.stats
+      expect(s[:embeddings]).to eq(500)
+      expect(s[:cache_misses]).to be > 0 # first search hit disk
+      expect(s[:cache_hits]).to be > 0   # second search hit cache
+      store.close
+    end
+  end
 
   describe "Vecstolite size constants" do
     it "KB is 1024" do
