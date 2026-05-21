@@ -98,4 +98,9 @@ class Cache(K, V)
     now = Time.instant
     @cache.each { |k, v| @cache.delete(k) if now - v.last_read > ttl }
   end
+
+  # Remove the entry for *key* if present. Returns the removed value or nil.
+  def delete(key : K) : V?
+    @cache.delete(key).try(&.entry)
+  end
 end
