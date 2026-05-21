@@ -35,7 +35,7 @@ jobs:
       - name: Install shards with dev tools
         if: ${{ runner.os == 'Linux' }}
         # This installs development dependencies
-        run: shards install
+        run: shards check || shards install
 
       - name: Setup debug environment (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -62,7 +62,7 @@ jobs:
       - name: Install shards for building release
         if: ${{ runner.os != 'Linux' }}
         # This skips installing development dependencies
-        run: shards install --release
+        run: shards check || shards install --production
 
       # Non-Windows
       - name: Setup release environment
@@ -95,8 +95,10 @@ jobs:
           choco install sqlite --params "/NoTools"
 
           $sqliteToolsPath = "C:\ProgramData\chocolatey\lib\SQLite\tools"
+
           if (Test-Path $sqliteToolsPath) {
             echo "LIBRARY_PATH=$sqliteToolsPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "LIB=$sqliteToolsPath;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             echo "CPATH=$sqliteToolsPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             echo "Path=$sqliteToolsPath;$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             echo "SQLite3 found at: $sqliteToolsPath"
