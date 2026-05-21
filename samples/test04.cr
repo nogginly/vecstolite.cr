@@ -101,4 +101,6 @@ begin
   end
 ensure
   store.close
+  puts store.stats
+  puts
 end
