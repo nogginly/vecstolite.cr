@@ -261,11 +261,19 @@ module Vecstolite
 
       vector = @embedder.embed(text)
       id = @index.size
-      @db.transaction do
-        @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector, meta, payload_id) VALUES (?, ?, ?, ?, ?)",
-          id, text, pack_vector(vector), meta.try(&.to_json), payload_id
-        @index.add(id: id, vector: vector)
-        update_graph_meta if @node_store.fully_persisted?
+      begin
+        @db.transaction do
+          @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector, meta, payload_id) VALUES (?, ?, ?, ?, ?)",
+            id, text, pack_vector(vector), meta.try(&.to_json), payload_id
+          @index.add(id: id, vector: vector)
+          update_graph_meta if @node_store.fully_persisted?
+        end
+      rescue ex
+        # DB transaction rolled back. For LRU/Disk stores, in-memory cache
+        # entries for back-edge neighbours may have been mutated before the
+        # failure — rebuild to restore consistency.
+        rebuild_after_rollback(id) if @node_store.fully_persisted?
+        raise ex
       end
       @entry_cache.put(id, CachedEntry(M).new(text, meta.as(M?), payload_id))
     end
