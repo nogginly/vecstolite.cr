@@ -30,10 +30,12 @@ jobs:
             bin/ameba
           key: ${{ runner.os }}-shards-${{ hashFiles('**/shard.lock') }}
 
-      - name: Install shards
-        run: shards check || shards install
-
       # ---- Build debug release and check code quality on one platform
+
+      - name: Install shards with dev tools
+        if: ${{ runner.os == 'Linux' }}
+        # This installs development dependencies
+        run: shards check || shards install
 
       - name: Setup debug environment (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -56,6 +58,11 @@ jobs:
         run: crystal spec -Dtest
 
       # ---- Build releases on all platforms
+
+      - name: Install shards for building release
+        if: ${{ runner.os != 'Linux' }}
+        # This skips installing development dependencies
+        run: shards check || shards install --release
 
       # Non-Windows
       - name: Setup release environment
@@ -93,6 +100,9 @@ jobs:
           } else {
            throw "SQLite3 tools folder not found at $sqliteToolsPath. Check choco installation."
           }
+
+          cd $sqliteToolsPath
+          lib.exe /machine:x64 /def:sqlite3.def /out:sqlite3.lib /name:sqlite3.dll
 
       - name: Build Release (Windows)
         if: ${{ runner.os == 'Windows' }}
