@@ -35,7 +35,7 @@ jobs:
       - name: Install shards with dev tools
         if: ${{ runner.os == 'Linux' }}
         # This installs development dependencies
-        run: shards check || shards install
+        run: shards install
 
       - name: Setup debug environment (Linux)
         if: ${{ runner.os == 'Linux' }}
@@ -62,7 +62,7 @@ jobs:
       - name: Install shards for building release
         if: ${{ runner.os != 'Linux' }}
         # This skips installing development dependencies
-        run: shards check || shards install --release
+        run: shards install --release
 
       # Non-Windows
       - name: Setup release environment
@@ -82,6 +82,10 @@ jobs:
         run: crystal run --release samples/test00.cr
 
       # Ah, Windows.
+      - name: Setup MSVC environment (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Setup release environment (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: powershell
@@ -91,7 +95,6 @@ jobs:
           choco install sqlite --params "/NoTools"
 
           $sqliteToolsPath = "C:\ProgramData\chocolatey\lib\SQLite\tools"
-
           if (Test-Path $sqliteToolsPath) {
             echo "LIBRARY_PATH=$sqliteToolsPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
             echo "CPATH=$sqliteToolsPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
