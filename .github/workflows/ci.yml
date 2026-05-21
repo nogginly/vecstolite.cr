@@ -83,8 +83,7 @@ jobs:
           mkdir bin\release -ErrorAction SilentlyContinue
           choco install sqlite --params "/NoTools"
 
-          # Chocolatey installs sqlite3 to C:\ProgramData\chocolatey\lib\sqlite3\tools
-          $sqliteToolsPath = "C:\ProgramData\chocolatey\lib\sqlite3\tools"
+          $sqliteToolsPath = "C:\ProgramData\chocolatey\lib\SQLite\tools"
 
           if (Test-Path $sqliteToolsPath) {
             echo "LIBRARY_PATH=$sqliteToolsPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
