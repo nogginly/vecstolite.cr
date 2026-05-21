@@ -1,3 +1,4 @@
+# :nodoc:
 # A generic key/value cache
 #
 # This cache stores values along with the timestamp of their last access.
@@ -15,7 +16,6 @@
 # The cache supports optional TTL (time-to-live) expiration.
 # If a TTL is set, entries older than the span are evicted on access.
 # It also records the last access time for hit/miss tracking.
-# :nodoc:
 class Cache(K, V)
   # Encapsulates a cached value and its last read timestamp.
   struct Cached(V)
