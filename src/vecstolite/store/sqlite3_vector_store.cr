@@ -5,6 +5,10 @@ require "../indexer/*"
 require "../sucre/cache"
 
 module Vecstolite
+  # **Deprecated.** Use `SQLitePayloadVectorStore` instead, which supersedes this
+  # class with richer metadata support, configurable node caching (LRU/disk/memory),
+  # and `bulk_add`. This class will be removed in a future version.
+  #
   # A SQLite-backed vector store with an in-memory HNSW index.
   #
   # Design:
@@ -27,6 +31,7 @@ module Vecstolite
   # store.close # flushes graph to SQLite
   # ```
   #
+  @[Deprecated]
   class SQLiteVectorStore
     include IndexedVectorStore(String)
 

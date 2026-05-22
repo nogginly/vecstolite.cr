@@ -11,65 +11,108 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, macos-15-intel]
+        os: [ubuntu-latest, macos-latest, windows-latest, macos-15-intel]
 
     runs-on: ${{ matrix.os }}
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
+      - name: Checkout code
+        uses: actions/checkout@v6
 
-    - name: Install Crystal
-      uses: crystal-lang/install-crystal@v1
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
 
-    - name: Cache shards
-      uses: actions/cache@v5
-      with:
-        path: |
-          lib
-          bin/ameba
-        key: ${{ runner.os }}-shards-${{ hashFiles('**/shard.lock') }}
+      - name: Cache shards
+        uses: actions/cache@v5
+        with:
+          path: |
+            lib
+            bin/ameba
+          key: ${{ runner.os }}-shards-${{ hashFiles('**/shard.lock') }}
 
-    - name: Install shards
-      run: shards check || shards install
+      # ---- Build debug release and check code quality on one platform
 
-    # ---- Build debug release and check code quality on one platform
+      - name: Install shards with dev tools
+        if: ${{ runner.os == 'Linux' }}
+        # This installs development dependencies
+        run: shards check || shards install
 
-    - name: Setup debug environment (Linux)
-      if: ${{ runner.os == 'Linux' }}
-      run: mkdir -p bin/debug
+      - name: Setup debug environment (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: mkdir -p bin/debug
 
-    - name: Build Debug (Linux)
-      if: ${{ runner.os == 'Linux' }}
-      run: SHARDS_BIN_PATH=bin/debug shards build --debug
+      - name: Build Debug (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: SHARDS_BIN_PATH=bin/debug shards build --debug
 
-    - name: Check formatting (Linux)
-      if: ${{ runner.os == 'Linux' }}
-      run: crystal tool format; git diff --exit-code src
+      - name: Check formatting (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: crystal tool format; git diff --exit-code src
 
-    - name: Run static code analysis (Linux)
-      if: ${{ runner.os == 'Linux' }}
-      run: bin/ameba src/
+      - name: Run static code analysis (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: bin/ameba src/
 
-    - name: Run tests (Linux)
-      if: ${{ runner.os == 'Linux' }}
-      run: crystal spec -Dtest
+      - name: Run tests (Linux)
+        if: ${{ runner.os == 'Linux' }}
+        run: crystal spec -Dtest
 
-    # ---- Build releases on all platforms
+      # ---- Build releases on all platforms
 
-    # Non-Windows
-    - name: Setup release environment
-      if: ${{ runner.os != 'Windows' }}
-      run: mkdir -p bin/release
+      - name: Install shards for building release
+        if: ${{ runner.os != 'Linux' }}
+        # This skips installing development dependencies
+        run: shards check || shards install --production
 
-    - name: Build Release
-      if: ${{ runner.os != 'Windows' }}
-      run: SHARDS_BIN_PATH=bin/release shards build --release
+      # Non-Windows
+      - name: Setup release environment
+        if: ${{ runner.os != 'Windows' }}
+        run: mkdir -p bin/release
 
-    - name: Run Release
-      if: ${{ runner.os != 'Windows' }}
-      run: bin/release/benchmark 2>&1 | grep "Usage"
+      - name: Build Release
+        if: ${{ runner.os != 'Windows' }}
+        run: SHARDS_BIN_PATH=bin/release shards build --production
 
-    - name: Run Test 00
-      if: ${{ runner.os != 'Windows' }}
-      run: crystal run --release samples/test00.cr
+      - name: Run Release
+        if: ${{ runner.os != 'Windows' }}
+        run: bin/release/benchmark 2>&1 | grep "Usage"
+
+      - name: Run Test 00
+        if: ${{ runner.os != 'Windows' }}
+        run: crystal run --release samples/test00.cr
+
+      # Ah, Windows.
+      - name: Setup MSVC environment (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup release environment (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: |
+          mkdir bin -ErrorAction SilentlyContinue
+          mkdir bin\release -ErrorAction SilentlyContinue
+          choco install sqlite --no-progress --params "/NoTools"
+
+          $sqliteToolsPath = "C:\ProgramData\chocolatey\lib\SQLite\tools"
+
+          if (Test-Path $sqliteToolsPath) {
+            echo "LIBRARY_PATH=$sqliteToolsPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "LIB=$sqliteToolsPath;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "CPATH=$sqliteToolsPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "Path=$sqliteToolsPath;$env:Path" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+            echo "SQLite3 found at: $sqliteToolsPath"
+          } else {
+           throw "SQLite3 tools folder not found at $sqliteToolsPath. Check choco installation."
+          }
+
+          cd $sqliteToolsPath
+          lib.exe /machine:x64 /def:sqlite3.def /out:sqlite3.lib /name:sqlite3.dll
+
+      - name: Build Release (Windows)
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        env:
+          SHARDS_BIN_PATH: "bin/release"
+        run: |
+          shards build --production

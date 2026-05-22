@@ -1,5 +1,5 @@
 require "./binary_heap"
-require "../vector_embedder"
+require "./hnsw_node_store"
 
 module Vecstolite
   # :nodoc:
@@ -47,56 +47,6 @@ module Vecstolite
       end
     end
 
-    # One node in the HNSW graph.
-    class HNSWNode
-      property vector : Embedding
-      # neighbours[layer] = array of neighbour IDs at that layer
-      property neighbours : Array(Array(Int32))
-
-      def initialize(@vector : Embedding, max_layer : Int32, m : Int32)
-        @neighbours = Array(Array(Int32)).new(max_layer + 1) { [] of Int32 }
-      end
-    end
-
-    # NodeStore is the abstract interface for storing HNSW graph nodes
-    # (vector + neighbour lists). It is the single source of truth for all
-    # node data — replacing the former split between @entry_embeddings and
-    # the index's own @nodes array.
-    #
-    # Phase 1 provides only MemoryNodeStore.
-    # Phases 2–3 will add LRUNodeStore and DiskNodeStore.
-    #
-    # HNSWNode is a class (reference type), so `get` returns a mutable
-    # reference. Back-edge mutations during `add` are reflected in the store
-    # directly without an explicit write-back — valid for in-memory stores.
-    # Future disk-backed stores will need explicit update calls instead.
-    module NodeStore
-      abstract def get(id : Int32) : HNSWNode
-      abstract def append(node : HNSWNode) : Nil
-      abstract def size : Int32
-    end
-
-    # In-memory NodeStore: nodes stored in a flat Array indexed by entry ID.
-    class MemoryNodeStore
-      include NodeStore
-
-      def initialize
-        @nodes = [] of HNSWNode
-      end
-
-      def get(id : Int32) : HNSWNode
-        @nodes[id]
-      end
-
-      def append(node : HNSWNode) : Nil
-        @nodes << node
-      end
-
-      def size : Int32
-        @nodes.size
-      end
-    end
-
     # A result returned from Index#search.
     record AnnResult, id : Int32, score : Float32
 
@@ -106,8 +56,8 @@ module Vecstolite
       DEFAULT_EF_SEARCH       =  50
 
       @node_store : NodeStore
-      @entry_point : Int32 # ID of the current graph entry point
-      @max_layer : Int32   # highest layer currently in the graph
+      getter entry_point : Int32 # ID of the current graph entry point
+      getter max_layer : Int32   # highest layer currently in the graph
       @m : Int32
       @m_max0 : Int32 # layer-0 allows 2× neighbours (standard HNSW)
       @ef_construction : Int32
@@ -119,13 +69,14 @@ module Vecstolite
         m : Int32 = DEFAULT_M,
         ef_construction : Int32 = DEFAULT_EF_CONSTRUCTION,
         seed : Int32? = nil,
+        node_store : NodeStore = MemoryNodeStore.new,
       )
         @dims = dims
         @m = m
         @m_max0 = m * 2
         @ef_construction = ef_construction
         @ml = 1.0 / Math.log(m.to_f64)
-        @node_store = MemoryNodeStore.new
+        @node_store = node_store
         @entry_point = -1
         @max_layer = -1
         @rng = seed ? Random.new(seed) : Random.new
@@ -135,8 +86,8 @@ module Vecstolite
       # Public API
       # -------------------------------------------------------------------------
 
-      # Insert a vector with integer *id*.  *id* must equal @node_store.size (i.e. add
-      # sequentially starting from 0, matching VectorStore's entry indices).
+      # Insert a vector with integer *id*. *id* must equal @node_store.size (i.e.
+      # add sequentially starting from 0, matching VectorStore's entry indices).
       def add(id : Int32, vector : Embedding) : Nil
         raise ArgumentError.new("Wrong dims: #{vector.size} != #{@dims}") if vector.size != @dims
         raise ArgumentError.new("id must be sequential (expected #{@node_store.size}, got #{id})") if id != @node_store.size
@@ -182,9 +133,13 @@ module Vecstolite
               if nb_node.neighbours[layer].size > m_at_layer
                 nb_node.neighbours[layer] = prune_neighbours(nb_node.vector, nb_node.neighbours[layer], m_at_layer)
               end
+              @node_store.write_back(neighbor.id, nb_node)
             end
           end
         end
+
+        # Persist the new node's own neighbour lists (no-op for MemoryNodeStore).
+        @node_store.write_back(id, node)
 
         # Update entry point if the new node reaches a higher layer.
         if node_layer > @max_layer
@@ -206,13 +161,11 @@ module Vecstolite
       def self.restore(dims : Int32, m : Int32, ef_construction : Int32,
                        entry_point : Int32, max_layer : Int32,
                        node_count : Int32,
+                       node_store : NodeStore = MemoryNodeStore.new,
                        & : Int32 -> {Embedding, Array(Array(Int32))}) : Index
-        index = new(dims: dims, m: m, ef_construction: ef_construction)
-        node_count.times do |id|
-          vector, neighbours = yield id
-          node = HNSWNode.new(vector, 0, m)
-          node.neighbours = neighbours
-          index.@node_store.append(node)
+        index = new(dims: dims, m: m, ef_construction: ef_construction, node_store: node_store)
+        node_store.restore_from_persisted(node_count) do |id|
+          yield id
         end
         index.reset_with(entry_point, max_layer)
         index

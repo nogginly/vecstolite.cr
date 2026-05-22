@@ -1,3 +1,4 @@
+# :nodoc:
 # A generic key/value cache
 #
 # This cache stores values along with the timestamp of their last access.
@@ -15,7 +16,6 @@
 # The cache supports optional TTL (time-to-live) expiration.
 # If a TTL is set, entries older than the span are evicted on access.
 # It also records the last access time for hit/miss tracking.
-# :nodoc:
 class Cache(K, V)
   # Encapsulates a cached value and its last read timestamp.
   struct Cached(V)
@@ -97,5 +97,10 @@ class Cache(K, V)
     return unless ttl = @ttl
     now = Time.instant
     @cache.each { |k, v| @cache.delete(k) if now - v.last_read > ttl }
+  end
+
+  # Remove the entry for *key* if present. Returns the removed value or nil.
+  def delete(key : K) : V?
+    @cache.delete(key).try(&.entry)
   end
 end

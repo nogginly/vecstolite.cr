@@ -3,6 +3,8 @@ require "../src/vecstolite"
 require "json"
 require "benchmark"
 
+alias SimpleSQLiteVectorStore = Vecstolite::SQLitePayloadVectorStore(String, String)
+
 USAGE = "Usage: benchmark <path_to_static_model_dir> <path_to_sentence_file>"
 model_dir = ARGV[0]? || abort(USAGE)
 text_file = ARGV[1]? || abort(USAGE)
@@ -15,8 +17,8 @@ File.delete("tmp_bench_m16.db") if File.exists?("tmp_bench_m16.db")
 File.delete("tmp_bench_m8.db") if File.exists?("tmp_bench_m8.db")
 
 vector_stores = {
-  "SQLite3(M=16, EF=200)" => Vecstolite::SQLiteVectorStore.create("tmp_bench_m16.db", embedder, m: 16, ef_construction: 200),
-  "SQLite3(M=8, EF=200)"  => Vecstolite::SQLiteVectorStore.create("tmp_bench_m8.db", embedder, m: 8, ef_construction: 200),
+  "SQLite3(M=16, EF=200)" => SimpleSQLiteVectorStore.create("tmp_bench_m16.db", embedder, m: 16, ef_construction: 200),
+  "SQLite3(M=8, EF=200)"  => SimpleSQLiteVectorStore.create("tmp_bench_m8.db", embedder, m: 8, ef_construction: 200),
   "Indexed(M=16, EF=200)" => Vecstolite::MemoryVectorStore.new(embedder, m: 16, ef_construction: 200),
   "Indexed(M=8, EF=200)"  => Vecstolite::MemoryVectorStore.new(embedder, m: 8, ef_construction: 200),
   "Indexed(M=16, EF=100)" => Vecstolite::MemoryVectorStore.new(embedder, m: 16, ef_construction: 100),
@@ -49,7 +51,7 @@ vector_stores.each do |name, store|
 end
 
 vector_stores.each do |_, store|
-  if store.is_a? Vecstolite::SQLiteVectorStore
+  if store.is_a? SimpleSQLiteVectorStore
     store.close
   end
 end
