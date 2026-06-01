@@ -62,7 +62,7 @@ jobs:
       - name: Install shards for building release
         if: ${{ runner.os != 'Linux' }}
         # This skips installing development dependencies
-        run: shards check || shards install --production
+        run: shards --production check || shards --production install
 
       # Non-Windows
       - name: Setup release environment
@@ -71,7 +71,7 @@ jobs:
 
       - name: Build Release
         if: ${{ runner.os != 'Windows' }}
-        run: SHARDS_BIN_PATH=bin/release shards build --production
+        run: SHARDS_BIN_PATH=bin/release shards --production build --release
 
       - name: Run Release
         if: ${{ runner.os != 'Windows' }}
@@ -115,4 +115,4 @@ jobs:
         env:
           SHARDS_BIN_PATH: "bin/release"
         run: |
-          shards build --production
+          shards --production build --release
