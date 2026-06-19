@@ -179,6 +179,38 @@ module Vecstolite
     end
 
     # -------------------------------------------------------------------------
+    # Maintenance
+    # -------------------------------------------------------------------------
+
+    # Physically remove tombstoned entries (left behind by `delete_payload`)
+    # and rebuild the HNSW graph from the survivors. O(n) in the live entry
+    # count — call it explicitly, e.g. after a batch of deletes, rather than
+    # after every individual delete.
+    def compact! : Nil
+      raise Error.new("Store is closed") if @closed
+      raise Error.new("Store is readonly") if @readonly
+
+      # Preserve whichever mode is currently active — if load_all_in_memory!
+      # was called, stay in memory rather than silently reverting to the
+      # cache_max_bytes-configured mode.
+      was_memory = @node_store.is_a?(HNSW::MemoryNodeStore)
+      fresh_store = was_memory ? HNSW::MemoryNodeStore.new : make_node_store
+      fresh_index = HNSW::Index.new(dims: @embedder.dimensions, m: @m, ef_construction: @ef_construction,
+        node_store: fresh_store, seed: @hnsw_seed)
+
+      # Built entirely from local variables up to this point — @node_store
+      # and @index are untouched. If the reindex transaction raises, it
+      # rolls back and this method re-raises with the store exactly as it
+      # was before compact! was called.
+      reindex_live_entries { |id, vector| fresh_index.add(id: id, vector: vector) }
+
+      @node_store = fresh_store
+      @index = fresh_index
+      @entry_cache.clear
+      save_graph
+    end
+
+    # -------------------------------------------------------------------------
     # Observability
     # -------------------------------------------------------------------------
 
@@ -241,6 +273,36 @@ module Vecstolite
     protected def add_payload_within_bulk(payload : P) : Int64
       result = @db.exec "INSERT INTO #{TABLE_PAYLOADS} (content) VALUES (?)", payload.to_json
       result.last_insert_id
+    end
+
+    # Delete a payload and every entry that references it.
+    #
+    # Entries are tombstoned (`deleted = 1`, `payload_id` detached to `NULL`)
+    # rather than physically removed — HNSW ids are positional, so removing a
+    # row outright would require patching every neighbour list that points to
+    # it. The entry's vector stays wired into the graph as a routing waypoint;
+    # `search` filters it out of results. Call `compact!` to reclaim the space
+    # once you're done deleting (a single compact after a batch of deletes is
+    # cheaper than one per delete).
+    def delete_payload(payload_id : Int64) : Nil
+      raise Error.new("Store is closed") if @closed
+      raise Error.new("Store is readonly") if @readonly
+
+      ids = [] of Int32
+      @db.query("SELECT id FROM #{TABLE_ENTRIES} WHERE payload_id = ? AND deleted = 0", payload_id) do |result_set|
+        result_set.each { ids << result_set.read(Int32) }
+      end
+
+      @db.transaction do
+        # Detach before deleting the payload row: payload_id is a FK with
+        # foreign_keys = ON, and detached entries aren't removed until
+        # compact!, so the payload row must outlive nothing that still
+        # references it.
+        @db.exec "UPDATE #{TABLE_ENTRIES} SET deleted = 1, payload_id = NULL WHERE payload_id = ?", payload_id
+        @db.exec "DELETE FROM #{TABLE_PAYLOADS} WHERE id = ?", payload_id
+      end
+
+      ids.each { |id| @entry_cache.delete(id) }
     end
 
     # -------------------------------------------------------------------------
@@ -327,7 +389,9 @@ module Vecstolite
       return if node_count == 0
 
       vectors = Array(Embedding).new(node_count)
-      @db.query("SELECT vector FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |result_set|
+      # No `deleted = 0` filter: must read every positional id 0..node_count-1,
+      # matching what's wired into the graph, not just live entries.
+      @db.query("SELECT vector FROM #{TABLE_ENTRIES} ORDER BY id") do |result_set|
         result_set.each { vectors << unpack_vector(result_set.read(Bytes)) }
       end
 
@@ -363,11 +427,20 @@ module Vecstolite
       purge_expired_from_cache
 
       query_vec = @embedder.embed(query)
-      @index.search(query_vec, k: k, ef: ef_search).map do |result|
-        entry = get_entry(result.id)
-        payload = entry.payload_id.try { |pid| get_payload(pid) }
-        SearchResult.new(entry.text, result.score, entry.meta, payload)
+      results = [] of SearchResult(M, P)
+      request = k
+      loop do
+        request = Math.min(request, @index.size)
+        results = @index.search(query_vec, k: request, ef: ef_search).compact_map do |candidate|
+          next unless entry = get_entry?(candidate.id)
+          payload = entry.payload_id.try { |pid| get_payload(pid) }
+          SearchResult.new(entry.text, candidate.score, entry.meta, payload)
+        end.first(k)
+        break if results.size >= k || request >= @index.size
+        # Some candidates were tombstoned; widen the beam and try again.
+        request = Math.min(request * 4, @index.size)
       end
+      results
     end
 
     def size : Int32
@@ -509,7 +582,9 @@ module Vecstolite
 
     private def restore_graph_from_db(meta : Hash(String, Int32)) : Nil
       node_count = 0
-      @db.scalar("SELECT COUNT(*) FROM #{TABLE_ENTRIES} WHERE deleted = 0").tap do |v|
+      # No `deleted = 0` filter: HNSW ids are positional (0..size-1) and a
+      # tombstoned id still occupies its slot in the graph until `compact!`.
+      @db.scalar("SELECT COUNT(*) FROM #{TABLE_ENTRIES}").tap do |v|
         node_count = v.as(Int64).to_i32
       end
       return if node_count == 0
@@ -529,7 +604,7 @@ module Vecstolite
         @db.query(
           "SELECT e.vector, n.neighbours FROM #{TABLE_ENTRIES} e
            JOIN #{TABLE_NODES} n ON e.id = n.id
-           WHERE e.id = ? AND e.deleted = 0", id
+           WHERE e.id = ?", id
         ) do |result_set|
           result_set.each do
             vector = unpack_vector(result_set.read(Bytes))
@@ -578,34 +653,56 @@ module Vecstolite
     end
 
     private def rebuild_index_from_entries : Nil
-      @index = new_index
-      @db.query("SELECT vector FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |result_set|
-        id = 0
+      fresh_index = new_index
+      reindex_live_entries { |id, vector| fresh_index.add(id: id, vector: vector) }
+      @index = fresh_index
+    end
+
+    # Physically renumbers `vecsto_entries` to a contiguous 0..n-1 id space
+    # over live (deleted = 0) rows only, discarding tombstones, clears
+    # `vecsto_nodes`, and rebuilds the graph by yielding each (id, vector)
+    # pair — all within a **single transaction**. HNSW ids are positional,
+    # so the entries rewrite and the graph rebuild must commit or roll back
+    # together: if they were two separate transactions, a failure in the
+    # rebuild step could leave `vecsto_entries` durably renumbered while the
+    # in-memory index (and therefore the next `add`'s computed id) is still
+    # built on the old numbering — an id collision on the very next insert.
+    private def reindex_live_entries(& : Int32, Embedding ->) : Nil
+      rows = Array({String, Bytes, String?, Int64?}).new
+      @db.query("SELECT text, vector, meta, payload_id FROM #{TABLE_ENTRIES} WHERE deleted = 0 ORDER BY id") do |result_set|
         result_set.each do
-          @index.add(id: id, vector: unpack_vector(result_set.read(Bytes)))
-          id += 1
+          rows << {result_set.read(String), result_set.read(Bytes), result_set.read(String?), result_set.read(Int64?)}
+        end
+      end
+
+      @db.transaction do
+        @db.exec "DELETE FROM #{TABLE_ENTRIES}"
+        @db.exec "DELETE FROM #{TABLE_NODES}"
+        rows.each_with_index do |(text, vector_blob, meta_json, payload_id), id|
+          @db.exec "INSERT INTO #{TABLE_ENTRIES} (id, text, vector, meta, payload_id) VALUES (?, ?, ?, ?, ?)",
+            id, text, vector_blob, meta_json, payload_id
+          yield id, unpack_vector(vector_blob)
         end
       end
     end
 
-    private def get_entry(id : Int32) : CachedEntry(M)
-      @entry_cache.get(id) { retrieve_entry(id) }
+    private def get_entry?(id : Int32) : CachedEntry(M)?
+      @entry_cache.get?(id) || retrieve_entry?(id).try { |entry| @entry_cache.put(id, entry) }
     end
 
-    private def retrieve_entry(id : Int32) : CachedEntry(M)
+    private def retrieve_entry?(id : Int32) : CachedEntry(M)?
       entry = nil
       @db.query(
-        "SELECT id, text, meta, payload_id FROM #{TABLE_ENTRIES} WHERE id = ? AND deleted = 0", id
+        "SELECT text, meta, payload_id FROM #{TABLE_ENTRIES} WHERE id = ? AND deleted = 0", id
       ) do |result_set|
         result_set.each do
-          _id = result_set.read(Int32)
           text = result_set.read(String)
           meta_json = result_set.read(String?)
           payload_id = result_set.read(Int64?)
           entry = CachedEntry.new(text, meta_json.try { |j| M.from_json(j) }, payload_id)
         end
       end
-      entry || raise Error.new("Unexpected error fetching entry (id = #{id}) from DB.")
+      entry
     end
 
     private def update_graph_meta : Nil

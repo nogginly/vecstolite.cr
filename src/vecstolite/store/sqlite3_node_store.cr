@@ -214,10 +214,14 @@ module Vecstolite
     private def fetch_from_db(id : Int32) : HNSW::HNSWNode
       vector : Embedding? = nil
       neighbours : Array(Array(Int32))? = nil
+      # No `deleted = 0` filter: graph traversal must be able to reach
+      # tombstoned nodes (they remain wired in as routing waypoints until
+      # `compact!`). Tombstone filtering happens at the search-result layer,
+      # not here.
       @db.query(
         "SELECT e.vector, n.neighbours
          FROM #{@table_entries} e JOIN #{@table_nodes} n ON e.id = n.id
-         WHERE e.id = ? AND e.deleted = 0",
+         WHERE e.id = ?",
         id
       ) do |result_set|
         result_set.each do
@@ -329,10 +333,11 @@ module Vecstolite
     private def fetch_from_db(id : Int32) : HNSW::HNSWNode
       vector : Embedding? = nil
       neighbours : Array(Array(Int32))? = nil
+      # See LRUNodeStore#fetch_from_db: no `deleted = 0` filter here either.
       @db.query(
         "SELECT e.vector, n.neighbours
          FROM #{@table_entries} e JOIN #{@table_nodes} n ON e.id = n.id
-         WHERE e.id = ? AND e.deleted = 0",
+         WHERE e.id = ?",
         id
       ) do |result_set|
         result_set.each do

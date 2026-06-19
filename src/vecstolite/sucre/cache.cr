@@ -103,4 +103,10 @@ class Cache(K, V)
   def delete(key : K) : V?
     @cache.delete(key).try(&.entry)
   end
+
+  # Remove all entries. Used when cached keys are invalidated en masse
+  # (e.g. after a store-level reindex where ids no longer mean the same thing).
+  def clear : Nil
+    @cache.clear
+  end
 end
