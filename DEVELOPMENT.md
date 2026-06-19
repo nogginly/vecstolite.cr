@@ -232,6 +232,8 @@ flowchart TD
 
 **`close`** calls `save_graph` (if not readonly) then closes the DB connection.
 
+**`delete_payload(payload_id)`** tombstones every entry referencing the payload (`deleted = 1`, `payload_id` detached) and deletes the payload row, in one transaction. The HNSW graph is untouched — tombstoned nodes remain as routing waypoints; `search` filters and oversamples around them. **`compact!`** physically drops tombstones and rebuilds the graph with a contiguous id space; call it explicitly after a batch of deletes. See Design Decisions below for why.
+
 ### Entry cache vs NodeStore
 
 Two separate caches serve different purposes and must not be confused:
@@ -289,6 +291,14 @@ When `bulk_add` fails and the DB transaction rolls back, the in-memory HNSW inde
 ### Thread safety is the caller's responsibility
 
 No internal locking. Concurrent access to a store instance must be serialised by the application (e.g. with a `Mutex`). Adding a mutex inside the store would protect individual method calls but not compound operations (`size` + `add` atomically, for example), giving a false sense of safety. The application always knows its own concurrency shape; the store does not.
+
+### Deletion is tombstone + deferred `compact!`, not graph surgery
+
+HNSW node ids are positional (`id = @index.size` at insert time) and used directly as neighbour-list references throughout the graph. There's no algorithm here for removing a node and patching every back-edge that points to it — that's the hard part of "delete from HNSW" in general, and this codebase doesn't attempt it.
+
+Instead, `delete_payload` tombstones: it sets `vecsto_entries.deleted = 1` and detaches `payload_id` to `NULL` (the FK is nullable, so this avoids the alternative of either violating `foreign_keys = ON` or adding a parallel `deleted` column to `vecsto_payloads`), then deletes the payload row. The node stays wired into the graph as a routing waypoint — `NodeStore` traversal reads (`LRUNodeStore`/`DiskNodeStore#fetch_from_db`, `restore_graph_from_db`, `load_all_in_memory!`) deliberately do **not** filter `deleted`, because graph connectivity depends on every id in the positional range still resolving to a vector. Filtering only happens at the search-result layer: `search` oversamples (requests more candidates from the index, growing geometrically) and drops tombstoned ids from the returned set.
+
+`compact!` is the only thing that physically removes tombstones — it rewrites `vecsto_entries` to a contiguous `0..n-1` id space over the survivors and rebuilds the graph from scratch. This is deliberately a separate, explicit, caller-triggered step (not run automatically after every delete) so that a batch of deletes costs one O(n) rebuild instead of one per delete.
 
 ## Thread safety
 
