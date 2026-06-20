@@ -2,13 +2,8 @@ require "simd"
 
 module Vecstolite
   # Leverage SIMD vector embedding maths.
-  {% if flag?(:aarch64) %}
-    # :nodoc:
-    VECM = SIMD::NEON.new
-  {% else %}
-    # :nodoc:
-    VECM = SIMD.instance
-  {% end %}
+  # :nodoc:
+  VECM = SIMD.scalar # This is faster with latest Crystal due to LLVM upgrade.
 
   # The vector embedding is a slice of Float32 values
   alias Embedding = Slice(Float32)

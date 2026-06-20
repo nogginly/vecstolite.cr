@@ -171,6 +171,18 @@ store = Vecstolite::SQLitePayloadVectorStore(M, P).create(path, embedder,
 store.load_all_in_memory!
 ```
 
+##### Deletion and compaction
+
+`delete_payload` removes a payload and every entry that references it. Removal is a tombstone, not a physical delete — `size` doesn't shrink and the underlying graph keeps the entries as routing waypoints until you `compact!`:
+
+```cr
+store.delete_payload(pid)   # payload gone, its entries excluded from search
+# ... delete more as needed ...
+store.compact!               # reclaims space, renumbers ids, rebuilds the graph
+```
+
+Search transparently skips tombstoned entries, so you don't have to call `compact!` after every delete. Batch deletes and compact once — it's an O(n) rebuild of the live entries, so it's cheaper to call it a handful of times than after each `delete_payload`.
+
 ### Searching
 
 ```cr
