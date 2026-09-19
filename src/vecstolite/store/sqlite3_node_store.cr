@@ -219,9 +219,11 @@ module Vecstolite
       # `compact!`). Tombstone filtering happens at the search-result layer,
       # not here.
       @db.query(
-        "SELECT e.vector, n.neighbours
-         FROM #{@table_entries} e JOIN #{@table_nodes} n ON e.id = n.id
-         WHERE e.id = ?",
+        <<-SQL,
+          SELECT e.vector, n.neighbours
+          FROM #{@table_entries} e JOIN #{@table_nodes} n ON e.id = n.id
+          WHERE e.id = ?
+          SQL
         id
       ) do |result_set|
         result_set.each do
@@ -335,9 +337,11 @@ module Vecstolite
       neighbours : Array(Array(Int32))? = nil
       # See LRUNodeStore#fetch_from_db: no `deleted = 0` filter here either.
       @db.query(
-        "SELECT e.vector, n.neighbours
-         FROM #{@table_entries} e JOIN #{@table_nodes} n ON e.id = n.id
-         WHERE e.id = ?",
+        <<-SQL,
+          SELECT e.vector, n.neighbours
+          FROM #{@table_entries} e JOIN #{@table_nodes} n ON e.id = n.id
+          WHERE e.id = ?
+          SQL
         id
       ) do |result_set|
         result_set.each do

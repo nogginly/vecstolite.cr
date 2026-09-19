@@ -599,9 +599,12 @@ module Vecstolite
         vector = uninitialized Embedding
         neighbours = uninitialized Array(Array(Int32))
         @db.query(
-          "SELECT e.vector, n.neighbours FROM #{TABLE_ENTRIES} e
-           JOIN #{TABLE_NODES} n ON e.id = n.id
-           WHERE e.id = ?", id
+          <<-SQL,
+            SELECT e.vector, n.neighbours
+            FROM #{TABLE_ENTRIES} e JOIN #{TABLE_NODES} n ON e.id = n.id
+            WHERE e.id = ?
+            SQL
+          id
         ) do |result_set|
           result_set.each do
             vector = unpack_vector(result_set.read(Bytes))
