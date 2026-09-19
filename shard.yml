@@ -1,5 +1,5 @@
 name: vecstolite
-version: 0.6.1
+version: 0.7.0-pre
 license: MPL2
 description: |
   A vector store for Crystal applications.
@@ -10,6 +10,7 @@ authors:
 development_dependencies:
   ameba:
     github: crystal-ameba/ameba
+    version: "1.7.0"
   spectator:
     gitlab: arctic-fox/spectator
   wiretap:

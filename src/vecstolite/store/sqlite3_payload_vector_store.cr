@@ -501,14 +501,14 @@ module Vecstolite
             value INTEGER NOT NULL,
             text  TEXT    DEFAULT NULL
           )
-        SQL
+          SQL
 
         @db.exec <<-SQL
           CREATE TABLE IF NOT EXISTS #{TABLE_PAYLOADS} (
             id      INTEGER PRIMARY KEY AUTOINCREMENT,
             content TEXT    NOT NULL
           )
-        SQL
+          SQL
 
         @db.exec <<-SQL
           CREATE TABLE IF NOT EXISTS #{TABLE_ENTRIES} (
@@ -519,14 +519,14 @@ module Vecstolite
             payload_id INTEGER DEFAULT NULL REFERENCES #{TABLE_PAYLOADS}(id),
             deleted    INTEGER NOT NULL DEFAULT 0
           )
-        SQL
+          SQL
 
         @db.exec <<-SQL
           CREATE TABLE IF NOT EXISTS #{TABLE_NODES} (
             id         INTEGER PRIMARY KEY,
             neighbours BLOB NOT NULL
           )
-        SQL
+          SQL
 
         @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('schema_version', ?, NULL)", SCHEMA_VERSION
         @db.exec "INSERT OR IGNORE INTO #{TABLE_META} VALUES ('m',              ?, NULL)", @m
