@@ -97,11 +97,18 @@ module Vecstolite
 
     def write_back(id : Int32, node : HNSW::HNSWNode) : Nil
       write_neighbours_to_db(id, node)
-      # Update cached byte count if neighbour lists changed size.
+      # The cache must end up holding the object just persisted. A caller can
+      # hold a node across an eviction, during which a second object for the
+      # same id may be read back and cached; leaving that copy in place would
+      # let a later write_back persist its stale neighbour lists over this one.
       if entry = @cache[id]?
         new_bytes = node_bytes(node)
         @current_bytes += new_bytes - entry.bytes
         entry.bytes = new_bytes
+        entry.node = node unless entry.node.same?(node)
+        move_to_head(entry)
+      else
+        insert_into_cache(id, node)
       end
     end
 

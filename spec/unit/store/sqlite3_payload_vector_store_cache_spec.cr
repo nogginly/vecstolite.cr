@@ -544,7 +544,7 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
     it "LRU cache with small budget handles 500 entries without error" do
       # Budget for ~10 nodes — forces constant eviction throughout the search.
       budget = 10_i64 * (embedder.dimensions * 4 + 128)
-      store = Store.create(db_file_name, embedder, cache_max_bytes: budget)
+      store = Store.create(db_file_name, embedder, cache_max_bytes: budget, hnsw_seed: 7)
       store.bulk_add do |batch|
         corpus.each { |s| batch.add(s) }
       end
@@ -552,6 +552,26 @@ Spectator.describe Vecstolite::SQLitePayloadVectorStore do
       expect(results.size).to eq(5)
       expect(store.stats[:cache_evictions]).to be > 0
       store.close
+    end
+
+    it "builds the same graph under eviction as without it" do
+      # Regression: a node evicted mid-insert could be re-read into the cache
+      # with empty neighbour lists, and a later write_back would persist that
+      # stale copy over the real one — silently stripping graph edges.
+      budget = 10_i64 * (embedder.dimensions * 4 + 128)
+      evicting = Store.create(db_file_name, embedder, cache_max_bytes: budget, hnsw_seed: 7)
+      evicting.bulk_add { |batch| corpus.each { |s| batch.add(s) } }
+      evicting_results = evicting.search("cold dark river", k: 5).map(&.text)
+      expect(evicting.stats[:cache_evictions]).to be > 0
+      evicting.close
+      File.delete?(db_file_name)
+
+      roomy = Store.create(db_file_name, embedder, hnsw_seed: 7)
+      roomy.bulk_add { |batch| corpus.each { |s| batch.add(s) } }
+      roomy_results = roomy.search("cold dark river", k: 5).map(&.text)
+      roomy.close
+
+      expect(evicting_results).to eq(roomy_results)
     end
 
     it "stats show expected cache behaviour at volume" do
