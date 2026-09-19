@@ -92,19 +92,9 @@ Any server that speaks the OpenAI embeddings API works here.
 
 ### Vector stores
 
-|Store                           |Backing |Notes                                          |
-|--------------------------------|--------|-----------------------------------------------|
-|`MemoryVectorStore`             |RAM only|Simple; no persistence                         |
-|`SQLitePayloadVectorStore(M, P)`|SQLite3 |Recommended; typed meta + shared payloads      |
-|`SQLiteVectorStore`             |SQLite3 |**Deprecated** — use `SQLitePayloadVectorStore`|
-
-#### `MemoryVectorStore`
-
-```cr
-store = Vecstolite::MemoryVectorStore.new(embedder)
-store.add("The sky is blue.")
-results = store.search("sky colour", k: 3)
-```
+|Store                           |Backing|Notes                                    |
+|--------------------------------|-------|-----------------------------------------|
+|`SQLitePayloadVectorStore(M, P)`|SQLite3|Typed meta + shared payloads             |
 
 #### `SQLitePayloadVectorStore(M, P)`
 

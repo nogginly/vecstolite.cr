@@ -276,10 +276,6 @@ The Crystal DB documentation recommends using `DB::Database` (via `DB.open`) wit
 
 The `tx.connection` pattern is designed for multi-connection databases (PostgreSQL, MySQL) where the pool is actually used. For SQLite it would be correct but unnecessarily invasive.
 
-### `MemoryNodeStore` as the default for `SQLiteVectorStore`
-
-`SQLiteVectorStore` (deprecated) uses `MemoryNodeStore` exclusively — no LRU or disk option. This is intentional: `SQLiteVectorStore` is being phased out in favour of `SQLitePayloadVectorStore`, so adding caching infrastructure to it would be wasted effort. New code should use `SQLitePayloadVectorStore`.
-
 ### Vectors stored twice in the original design (now fixed)
 
 Prior to the `NodeStore` refactor (v0.5.2), embedding vectors were stored twice in memory: once in `@entry_embeddings` (an array of `EntryVector` structs) and again inside each `HNSWNode`. The `NodeStore` abstraction eliminated this by making the node the single owner of both vector and neighbour data. `Slice(Float32)` is a struct (pointer + size, 16 bytes), so assignment copies the struct only — not the underlying float buffer — but the redundant struct array still wasted memory and complicated ownership.

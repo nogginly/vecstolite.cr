@@ -1,14 +1,10 @@
 require "./vecstolite/embedder/*"
 require "./vecstolite/store/*"
 
-# **Vecstolite** is a vector store _shard_ for Crystal with in-memory and SQLite3-backed storage support.
+# **Vecstolite** is a vector store _shard_ for Crystal, backed by SQLite3 on disk
+# or in memory, with an HNSW index and configurable node caching.
 #
-# Different kinds of vector stores are available:
-#
-# - `LinearVectorStore`
-# - `IndexedVectorStore`
-# - `SQLiteVectorStore`
-# - `SQLitePayloadVectorStore`
+# The store is `SQLitePayloadVectorStore`.
 #
 # The following types of vector embedders are available:
 #

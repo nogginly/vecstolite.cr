@@ -1,6 +1,7 @@
 require "sqlite3"
 require "json"
 
+require "../sizes"
 require "../indexer/*"
 require "../sucre/cache"
 require "./sqlite3_node_store"
@@ -34,8 +35,6 @@ module Vecstolite
   # store.close
   # ```
   class SQLitePayloadVectorStore(M, P)
-    include IndexedVectorStore(M)
-
     class Error < Exception; end
 
     SCHEMA_VERSION          = 3
@@ -51,9 +50,7 @@ module Vecstolite
       text : String,
       score : Float32,
       meta : M?,
-      payload : P? do
-      include VectorSearchResult
-    end
+      payload : P?
 
     # Yielded by `bulk_add` to allow many entries and payloads to be added
     # within a single database transaction, reducing per-add fsync overhead.
