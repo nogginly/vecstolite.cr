@@ -8,12 +8,12 @@ Spectator.describe Vecstolite::Index::HNSW do
 
   let(dims) { 8 }
 
-  # Recall floor for the HNSW-vs-Flat harness. Measured baseline is 0.752
-  # (2,000 vectors, 32 dimensions, 20 clusters, m=8, ef_construction=64,
-  # ef=16, k=10, corpus seed 5, graph seed 42). Both seeds are fixed, so this
-  # is close to deterministic; the floor sits just below the baseline to catch
-  # a real regression rather than float noise.
-  RECALL_FLOOR = 0.72
+  # Recall floor for the HNSW-vs-Flat harness. Measured baseline is 0.936
+  # (2,000 vectors, 32 dimensions, 50 clusters at spread 0.15, m=8,
+  # ef_construction=64, ef=5, k=5, corpus seed 5, graph seed 42). Both seeds
+  # are fixed, so this is close to deterministic; the floor sits just below
+  # the baseline to catch a real regression rather than float noise.
+  RECALL_FLOOR = 0.90
 
   # A deterministic unit vector, so a seeded run is reproducible.
   private def unit_vector(rng : Random, dims : Int32) : Vecstolite::Embedding
@@ -226,8 +226,12 @@ Spectator.describe Vecstolite::Index::HNSW do
     # 3. A beam far narrower than the corpus.
     let(recall_dims) { 32 }
     let(recall_corpus) { 2_000 }
-    let(recall_k) { 10 }
-    let(recall_ef) { 16 }
+    # The effective beam is max(ef, k), so narrowing the search means lowering
+    # both. With diversity-based neighbour selection the index scores a flat
+    # 1.0 at k=10, ef=16 — a saturated harness proves nothing, so this one is
+    # deliberately harder.
+    let(recall_k) { 5 }
+    let(recall_ef) { 5 }
     let(recall_queries) { 25 }
 
     # A vector near *centre*, normalised. Small *spread* means tight clusters.
@@ -247,12 +251,12 @@ Spectator.describe Vecstolite::Index::HNSW do
       ids = [] of Int64
       vectors = [] of Vecstolite::Embedding
       count.times do |i|
-        vector = near(rng, centres[i % clusters], 0.35)
+        vector = near(rng, centres[i % clusters], 0.15)
         vectors << vector
         ids << repo.insert_entry("entry #{i}", vector)
       end
 
-      held_out = Array.new(queries) { |i| near(rng, centres[i % clusters], 0.35) }
+      held_out = Array.new(queries) { |i| near(rng, centres[i % clusters], 0.15) }
       {repo, ids, vectors, held_out}
     end
 
@@ -269,10 +273,19 @@ Spectator.describe Vecstolite::Index::HNSW do
 
     it "agrees with an exact scan on most queries" do
       repo, ids, vectors, held_out =
-        clustered(recall_corpus, recall_dims, clusters: 20, queries: recall_queries, seed: 5)
+        clustered(recall_corpus, recall_dims, clusters: 50, queries: recall_queries, seed: 5)
       index = build(repo, ids, vectors, Cache::Memory.new(repo))
 
-      expect(measure_recall(repo, ids, vectors, held_out, index)).to be >= RECALL_FLOOR
+      recall = measure_recall(repo, ids, vectors, held_out, index)
+      expect(recall).to be >= RECALL_FLOOR
+
+      # A harness that scores a perfect 1.0 has stopped measuring anything: it
+      # cannot register a regression. This has already happened twice, once
+      # with corpus members as queries and once with a beam wider than the
+      # index needed. If this assertion fails, harden the configuration —
+      # narrower beam, tighter clusters, larger corpus — and recalibrate
+      # RECALL_FLOOR against the new figure. Do not delete it.
+      expect(recall).to be < 1.0
       repo.close
     end
 
