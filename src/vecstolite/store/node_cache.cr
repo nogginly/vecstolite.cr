@@ -36,6 +36,10 @@ module Vecstolite
       # strategies.
       abstract def flush : Nil
 
+      # Discards every node, in memory and in the repository, so the graph can
+      # be rebuilt from the stored vectors.
+      abstract def clear : Nil
+
       abstract def mode : Symbol
 
       def stats : NamedTuple(mode: Symbol, cached: Int32, bytes: Int64,
@@ -114,6 +118,12 @@ module Vecstolite
         end
       end
 
+      def clear : Nil
+        @nodes.clear
+        @entry_ids.clear
+        @repo.clear_nodes
+      end
+
       def mode : Symbol
         :memory
       end
@@ -182,6 +192,11 @@ module Vecstolite
       end
 
       def flush : Nil
+      end
+
+      def clear : Nil
+        @repo.clear_nodes
+        @total = 0
       end
 
       def mode : Symbol
@@ -283,6 +298,15 @@ module Vecstolite
       end
 
       def flush : Nil
+      end
+
+      def clear : Nil
+        @repo.clear_nodes
+        @cache.clear
+        @head = nil
+        @tail = nil
+        @current_bytes = 0_i64
+        @total = 0
       end
 
       def mode : Symbol
