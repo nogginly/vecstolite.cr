@@ -8,12 +8,20 @@ Spectator.describe Vecstolite::Index::HNSW do
 
   let(dims) { 8 }
 
-  # Recall floor for the HNSW-vs-Flat harness. Measured baseline is 0.936
+  # Recall floor for the HNSW-vs-Flat harness. Measured baseline is 0.976
   # (2,000 vectors, 32 dimensions, 50 clusters at spread 0.15, m=8,
   # ef_construction=64, ef=5, k=5, corpus seed 5, graph seed 42). Both seeds
   # are fixed, so this is close to deterministic; the floor sits just below
   # the baseline to catch a real regression rather than float noise.
-  RECALL_FLOOR = 0.90
+  #
+  # How it got here, since the two knobs turned out to be coupled:
+  #   0.752  nearest-m neighbours, layer probability 1/e
+  #   0.572  nearest-m neighbours, layer probability 1/m
+  #   0.936  diversity neighbours, layer probability 1/e
+  #   0.976  diversity neighbours, layer probability 1/m
+  # The middle row is why the layer draw cannot be judged on its own: without
+  # diverse neighbours, the surplus upper layers were carrying the routing.
+  RECALL_FLOOR = 0.94
 
   # A deterministic unit vector, so a seeded run is reproducible.
   private def unit_vector(rng : Random, dims : Int32) : Vecstolite::Embedding
@@ -162,6 +170,26 @@ Spectator.describe Vecstolite::Index::HNSW do
         repo.close
       end
     {% end %}
+  end
+
+  describe "graph shape" do
+    it "puts roughly one node in m above layer 0" do
+      # The layer draw decides how tall the graph is. At p = 1/m about an
+      # eighth of nodes reach layer 1 with m = 8; an earlier p = 1/e put
+      # better than a third of them there, costing a beam search and back-edge
+      # writes on every insert without improving routing.
+      repo, ids, vectors = corpus(1_000, dims, seed: 3)
+      cache = Cache::Memory.new(repo)
+      build(repo, ids, vectors, cache)
+
+      above_zero = 0
+      cache.each_node { |_, _, node| above_zero += 1 if node.neighbours.size > 1 }
+      fraction = above_zero / 1_000.0
+
+      expect(fraction).to be < 0.25
+      expect(fraction).to be > 0.02
+      repo.close
+    end
   end
 
   describe "neighbour selection" do

@@ -164,14 +164,13 @@ module Vecstolite
 
       # -------------------------------------------------------------------------
 
-      # Draws a layer for a new node. Layer 0 is the common case; each further
-      # layer is exponentially less likely.
+      # Draws a layer for a new node from an exponential distribution, so that
+      # a node reaches layer 1 or above with probability 1/m. Upper layers are
+      # the graph's express lanes: too many of them and every insert pays for
+      # extra beam searches and back-edge writes without improving routing.
       private def random_layer : Int32
-        layer = 0
-        while @rng.rand < (1.0 / Math::E) && layer < 32
-          layer += 1
-        end
-        layer
+        sample = 1.0 - @rng.rand # (0, 1], so the logarithm is finite
+        (-Math.log(sample) * @ml).to_i32.clamp(0, 32)
       end
 
       # Follows the neighbour at *layer* that most reduces distance to *query*,
