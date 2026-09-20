@@ -91,7 +91,7 @@ module Vecstolite
           ef_at_layer = layer == 0 ? @ef_construction : reduced_ef_higher_layers
 
           candidates = search_layer(vector, ep, ef_at_layer, layer)
-          neighbours = select_neighbours(vector, candidates, m_at_layer)
+          neighbours = select_neighbours(candidates, m_at_layer)
 
           node.neighbours[layer] = neighbours.map(&.ord)
           ep = neighbours.first.ord unless neighbours.empty?
@@ -239,22 +239,61 @@ module Vecstolite
         result.reverse!
       end
 
-      # Takes the *m* nearest candidates.
-      private def select_neighbours(_query : Embedding,
-                                    candidates : Array(Candidate),
+      # Chooses up to *m* neighbours from *candidates*, which must arrive
+      # sorted nearest first.
+      #
+      # Taking simply the *m* nearest leaves a node in a dense cluster with
+      # every edge pointing inward, and a search that arrives there has no
+      # road out. This keeps a candidate only when it is closer to the node
+      # being linked than to any neighbour already chosen, so the selected
+      # edges spread out in different directions rather than piling into one
+      # neighbourhood.
+      #
+      # Candidates rejected that way are held back and used to fill any
+      # remaining slots, so a node never ends up with fewer edges than nearest
+      # *m* would have given it.
+      private def select_neighbours(candidates : Array(Candidate),
                                     m : Int32) : Array(Candidate)
-        candidates.first(m)
+        return candidates if candidates.size <= m
+
+        selected = Array(Candidate).new(m)
+        selected_vectors = Array(Embedding).new(m)
+        discarded = Array(Candidate).new
+
+        candidates.each do |candidate|
+          break if selected.size >= m
+
+          candidate_vector = @cache.get(candidate.ord).vector
+          closer_to_node = selected_vectors.all? do |chosen|
+            candidate.dist < distance(candidate_vector, chosen)
+          end
+
+          if closer_to_node
+            selected << candidate
+            selected_vectors << candidate_vector
+          else
+            discarded << candidate
+          end
+        end
+
+        discarded.each do |candidate|
+          break if selected.size >= m
+          selected << candidate
+        end
+
+        selected
       end
 
-      # Prunes a neighbour list back to the *m* nearest to *base_vec*.
+      # Prunes a neighbour list back to *m*, applying the same diversity rule
+      # as `select_neighbours` so pruning cannot undo what selection achieved.
       private def prune_neighbours(base_vec : Embedding,
                                    neighbour_ords : Array(Int32),
                                    m : Int32) : Array(Int32)
-        neighbour_ords
-          .map { |nb_ord| {nb_ord, distance(base_vec, @cache.get(nb_ord).vector)} }
-          .sort_by! { |_, dist| dist }
-          .first(m)
-          .map { |nb_ord, _| nb_ord }
+        candidates = neighbour_ords
+          .map { |nb_ord| Candidate.new(nb_ord, distance(base_vec, @cache.get(nb_ord).vector)) }
+          .sort_by!(&.dist)
+
+        select_neighbours(candidates, m).map(&.ord)
       end
     end
   end

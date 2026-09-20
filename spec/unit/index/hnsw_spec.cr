@@ -164,6 +164,55 @@ Spectator.describe Vecstolite::Index::HNSW do
     {% end %}
   end
 
+  describe "neighbour selection" do
+    it "keeps every node within its neighbour limit" do
+      repo, ids, vectors = corpus(200, dims, seed: 9)
+      cache = Cache::Memory.new(repo)
+      build(repo, ids, vectors, cache)
+
+      cache.each_node do |_, _, node|
+        node.neighbours.each_with_index do |layer_neighbours, layer|
+          limit = layer == 0 ? 16 : 8
+          expect(layer_neighbours.size).to be <= limit
+        end
+      end
+      repo.close
+    end
+
+    it "gives nodes edges that leave their own cluster" do
+      # With nearest-m selection, a node in a dense cluster keeps only edges
+      # pointing inward and a search arriving there cannot get out. Built from
+      # two well-separated clusters, some node must bridge them.
+      repo = Repo.open(":memory:", dimensions: dims)
+      rng = Random.new(11)
+      ids = [] of Int64
+      vectors = [] of Vecstolite::Embedding
+      100.times do |i|
+        base = Array(Float32).new(dims) { |d| (d < dims // 2) == (i.even?) ? 1.0_f32 : 0.0_f32 }
+        values = base.map { |b| (b + rng.rand(-0.15..0.15)).to_f32 }
+        norm = Math.sqrt(values.sum { |v| v * v }).to_f32
+        vector = Vecstolite::Embedding.new(dims) { |d| values[d] / norm }
+        vectors << vector
+        ids << repo.insert_entry("entry #{i}", vector)
+      end
+
+      cache = Cache::Memory.new(repo)
+      index = Hnsw.new(cache, dims: dims, m: 8, ef_construction: 64, seed: 42)
+      ids.each_with_index { |entry_id, i| index.add(entry_id, vectors[i]) }
+
+      # Each node's cluster is decided by the parity of its ord, since entries
+      # were inserted alternating between the two.
+      crossings = 0
+      cache.each_node do |ord, _, node|
+        node.neighbours[0].each do |nb_ord|
+          crossings += 1 if nb_ord.even? != ord.even?
+        end
+      end
+      expect(crossings).to be > 0
+      repo.close
+    end
+  end
+
   describe "recall against Flat" do
     # Flat is exact, so it defines the right answer. Three things make this
     # harness discriminating, and all three matter:
