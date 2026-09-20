@@ -10,8 +10,8 @@ Spectator.describe Vecstolite::NodeCache do
     Vecstolite::Embedding.new(4) { value }
   end
 
-  private def node_for(value : Float32, neighbours : Array(Array(Int32))) : Vecstolite::HNSW::HNSWNode
-    node = Vecstolite::HNSW::HNSWNode.new(vec(value), 0, 0)
+  private def node_for(value : Float32, neighbours : Array(Array(Int32))) : Vecstolite::Index::Node
+    node = Vecstolite::Index::Node.new(vec(value), 0)
     node.neighbours = neighbours
     node
   end

@@ -1,6 +1,6 @@
 require "./strategy"
 require "../store/repository"
-require "../indexer/binary_heap"
+require "./binary_heap"
 
 module Vecstolite
   module Index

@@ -24,14 +24,9 @@ open_existing = ARGV[0]? == "--open"
 
 embedder = Vecstolite::LexicalEmbedder.new(dimensions: 512)
 
-store = if open_existing
-          Vecstolite::SQLitePayloadVectorStore(EmbeddingMeta, TranslationSet)
-            .open(DBNAME, embedder)
-        else
-          Dir.glob("#{DBNAME}*") { |f| File.delete?(f) }
-          Vecstolite::SQLitePayloadVectorStore(EmbeddingMeta, TranslationSet)
-            .create(DBNAME, embedder)
-        end
+Dir.glob("#{DBNAME}*") { |f| File.delete?(f) } unless open_existing
+
+store = Vecstolite::Store(EmbeddingMeta, TranslationSet).open(DBNAME, embedder)
 
 # ---------------------------------------------------------------------------
 # Populate (skipped when --open)
@@ -99,8 +94,20 @@ begin
     end
     puts
   end
+  # -------------------------------------------------------------------------
+  # Delete and compact
+  # -------------------------------------------------------------------------
+
+  unless open_existing
+    first = store.search("What colour is the sky?", k: 1).first
+    puts "Deleting payload #{first.payload_id} (#{first.text})"
+    if pid = first.payload_id
+      puts "  #{store.delete_payload(pid)} entries tombstoned, #{store.tombstones} awaiting compaction."
+    end
+    store.compact!
+    puts "  after compact!: #{store.size} entries, #{store.tombstones} tombstones."
+    puts
+  end
 ensure
   store.close
-  puts store.stats
-  puts
 end

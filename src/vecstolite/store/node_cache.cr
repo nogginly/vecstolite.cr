@@ -1,5 +1,5 @@
 require "./repository"
-require "../indexer/hnsw_node_store"
+require "../index/node"
 
 module Vecstolite
   # Holds graph nodes for an index strategy, backed by `Repository`.
@@ -16,17 +16,17 @@ module Vecstolite
   # search results against.
   module NodeCache
     abstract class Strategy
-      abstract def get(ord : Int32) : HNSW::HNSWNode
+      abstract def get(ord : Int32) : Index::Node
 
       # Adds *node* as the next graph position, returning its `ord`.
-      abstract def append(node : HNSW::HNSWNode, entry_id : Int64) : Int32
+      abstract def append(node : Index::Node, entry_id : Int64) : Int32
 
       # Persists mutated neighbour lists for *ord*.
-      abstract def write_back(ord : Int32, node : HNSW::HNSWNode) : Nil
+      abstract def write_back(ord : Int32, node : Index::Node) : Nil
 
       abstract def entry_id(ord : Int32) : Int64
       abstract def size : Int32
-      abstract def each_node(& : Int32, Int64, HNSW::HNSWNode ->) : Nil
+      abstract def each_node(& : Int32, Int64, Index::Node ->) : Nil
 
       # True when every mutation is already on disk, so only graph metadata
       # needs writing at close.
@@ -54,7 +54,7 @@ module Vecstolite
 
       # Bytes a node occupies in RAM: vector, packed neighbours, and object
       # overhead.
-      protected def node_bytes(node : HNSW::HNSWNode) : Int64
+      protected def node_bytes(node : Index::Node) : Int64
         (node.vector.bytesize + node.neighbours.sum(&.size) * 4 + 128).to_i64
       end
     end
@@ -62,11 +62,11 @@ module Vecstolite
     # Keeps every node in RAM. `flush` writes the whole graph in one pass, so
     # a crash before it leaves `graph_saved = 0` and forces a rebuild.
     class Memory < Strategy
-      @nodes : Array(HNSW::HNSWNode)
+      @nodes : Array(Index::Node)
       @entry_ids : Array(Int64)
 
       def initialize(@repo : Repository)
-        @nodes = [] of HNSW::HNSWNode
+        @nodes = [] of Index::Node
         @entry_ids = [] of Int64
       end
 
@@ -75,24 +75,24 @@ module Vecstolite
         @nodes.clear
         @entry_ids.clear
         @repo.each_node do |row|
-          node = HNSW::HNSWNode.new(row.vector, 0, 0)
+          node = Index::Node.new(row.vector, 0)
           node.neighbours = row.neighbours
           @nodes << node
           @entry_ids << row.entry_id
         end
       end
 
-      def get(ord : Int32) : HNSW::HNSWNode
+      def get(ord : Int32) : Index::Node
         @nodes[ord]
       end
 
-      def append(node : HNSW::HNSWNode, entry_id : Int64) : Int32
+      def append(node : Index::Node, entry_id : Int64) : Int32
         @nodes << node
         @entry_ids << entry_id
         @nodes.size - 1
       end
 
-      def write_back(ord : Int32, node : HNSW::HNSWNode) : Nil
+      def write_back(ord : Int32, node : Index::Node) : Nil
         @nodes[ord] = node
       end
 
@@ -104,7 +104,7 @@ module Vecstolite
         @nodes.size
       end
 
-      def each_node(& : Int32, Int64, HNSW::HNSWNode ->) : Nil
+      def each_node(& : Int32, Int64, Index::Node ->) : Nil
         @nodes.each_with_index do |node, ord|
           yield ord, @entry_ids[ord], node
         end
@@ -157,22 +157,22 @@ module Vecstolite
         @misses = 0_i64
       end
 
-      def get(ord : Int32) : HNSW::HNSWNode
+      def get(ord : Int32) : Index::Node
         @misses += 1
         row = @repo.node(ord) || raise Repository::Error.new("Node #{ord} not found.")
-        node = HNSW::HNSWNode.new(row.vector, 0, 0)
+        node = Index::Node.new(row.vector, 0)
         node.neighbours = row.neighbours
         node
       end
 
-      def append(node : HNSW::HNSWNode, entry_id : Int64) : Int32
+      def append(node : Index::Node, entry_id : Int64) : Int32
         ord = @total
         @total += 1
         @repo.insert_node(ord, entry_id, node.neighbours)
         ord
       end
 
-      def write_back(ord : Int32, node : HNSW::HNSWNode) : Nil
+      def write_back(ord : Int32, node : Index::Node) : Nil
         @repo.update_neighbours(ord, node.neighbours)
       end
 
@@ -184,9 +184,9 @@ module Vecstolite
         @total
       end
 
-      def each_node(& : Int32, Int64, HNSW::HNSWNode ->) : Nil
+      def each_node(& : Int32, Int64, Index::Node ->) : Nil
         @repo.each_node do |row|
-          node = HNSW::HNSWNode.new(row.vector, 0, 0)
+          node = Index::Node.new(row.vector, 0)
           node.neighbours = row.neighbours
           yield row.ord, row.entry_id, node
         end
@@ -219,7 +219,7 @@ module Vecstolite
     class LRU < Strategy
       private class Slot
         property ord : Int32
-        property node : HNSW::HNSWNode
+        property node : Index::Node
         property bytes : Int64
         property prev : Slot?
         property succ : Slot?
@@ -241,7 +241,7 @@ module Vecstolite
         @total = @repo.node_count
       end
 
-      def get(ord : Int32) : HNSW::HNSWNode
+      def get(ord : Int32) : Index::Node
         if slot = @cache[ord]?
           promote(slot)
           @hits += 1
@@ -250,13 +250,13 @@ module Vecstolite
 
         @misses += 1
         row = @repo.node(ord) || raise Repository::Error.new("Node #{ord} not found.")
-        node = HNSW::HNSWNode.new(row.vector, 0, 0)
+        node = Index::Node.new(row.vector, 0)
         node.neighbours = row.neighbours
         admit(ord, node)
         node
       end
 
-      def append(node : HNSW::HNSWNode, entry_id : Int64) : Int32
+      def append(node : Index::Node, entry_id : Int64) : Int32
         ord = @total
         @total += 1
         @repo.insert_node(ord, entry_id, node.neighbours)
@@ -269,7 +269,7 @@ module Vecstolite
       # the same ord may be read back and cached; leaving that copy in place
       # would let a later write_back persist its stale neighbours over this
       # one, silently stripping edges from the graph.
-      def write_back(ord : Int32, node : HNSW::HNSWNode) : Nil
+      def write_back(ord : Int32, node : Index::Node) : Nil
         @repo.update_neighbours(ord, node.neighbours)
         if slot = @cache[ord]?
           bytes = node_bytes(node)
@@ -290,9 +290,9 @@ module Vecstolite
         @total
       end
 
-      def each_node(& : Int32, Int64, HNSW::HNSWNode ->) : Nil
+      def each_node(& : Int32, Int64, Index::Node ->) : Nil
         @repo.each_node do |row|
-          node = HNSW::HNSWNode.new(row.vector, 0, 0)
+          node = Index::Node.new(row.vector, 0)
           node.neighbours = row.neighbours
           yield row.ord, row.entry_id, node
         end
@@ -331,7 +331,7 @@ module Vecstolite
       end
 
       # -------------------------------------------------------------------------
-      private def admit(ord : Int32, node : HNSW::HNSWNode) : Nil
+      private def admit(ord : Int32, node : Index::Node) : Nil
         bytes = node_bytes(node)
         while @current_bytes + bytes > @max_bytes && @tail
           evict_tail

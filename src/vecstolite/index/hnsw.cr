@@ -1,6 +1,6 @@
 require "./strategy"
 require "../store/node_cache"
-require "../indexer/binary_heap"
+require "./binary_heap"
 
 module Vecstolite
   module Index
@@ -25,10 +25,6 @@ module Vecstolite
 
       # One node in the search beam, ordered by distance (lower is nearer).
       record Candidate, ord : Int32, dist : Float32
-
-      # The stored node type, kept fully qualified: `HNSW` inside this class
-      # refers to the class itself, not to the graph module.
-      alias Node = ::Vecstolite::HNSW::HNSWNode
 
       getter entry_point : Int32
       getter max_layer : Int32
@@ -69,7 +65,7 @@ module Vecstolite
 
         reduced_ef_higher_layers = [@ef_construction // 4, @m].max
         node_layer = random_layer
-        node = Node.new(vector, node_layer, @m)
+        node = Node.new(vector, node_layer)
         ord = @cache.append(node, entry_id)
 
         if @entry_point == -1

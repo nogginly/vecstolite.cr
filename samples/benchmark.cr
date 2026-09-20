@@ -3,7 +3,7 @@ require "../src/vecstolite"
 require "json"
 require "benchmark"
 
-alias SimpleSQLiteVectorStore = Vecstolite::SQLitePayloadVectorStore(String, String)
+alias BenchStore = Vecstolite::Store(String, String)
 
 USAGE = "Usage: benchmark <path_to_static_model_dir> <path_to_sentence_file>"
 model_dir = ARGV[0]? || abort(USAGE)
@@ -17,8 +17,10 @@ File.delete("tmp_bench_m16.db") if File.exists?("tmp_bench_m16.db")
 File.delete("tmp_bench_m8.db") if File.exists?("tmp_bench_m8.db")
 
 vector_stores = {
-  "SQLite3(M=16, EF=200)" => SimpleSQLiteVectorStore.create("tmp_bench_m16.db", embedder, m: 16, ef_construction: 200),
-  "SQLite3(M=8, EF=200)"  => SimpleSQLiteVectorStore.create("tmp_bench_m8.db", embedder, m: 8, ef_construction: 200),
+  "HNSW(M=16, EF=200)" => BenchStore.open("tmp_bench_m16.db", embedder,
+    index: Vecstolite::Index.hnsw(m: 16, ef_construction: 200)),
+  "HNSW(M=8, EF=200)" => BenchStore.open("tmp_bench_m8.db", embedder,
+    index: Vecstolite::Index.hnsw(m: 8, ef_construction: 200)),
 }
 
 puts "### Add all (#{sentences.size} sentences)"
@@ -45,8 +47,4 @@ vector_stores.each do |name, store|
   puts "#{result}\t#{name}"
 end
 
-vector_stores.each do |_, store|
-  if store.is_a? SimpleSQLiteVectorStore
-    store.close
-  end
-end
+vector_stores.each { |_, store| store.close }
