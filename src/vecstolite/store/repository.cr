@@ -206,15 +206,15 @@ module Vecstolite
     end
 
     def entry(id : Int64) : EntryRow?
-      row = @db.query_one? "SELECT id, key, text, meta, payload_id, deleted FROM #{TABLE_ENTRIES} WHERE id = ?",
+      result_row = @db.query_one? "SELECT id, key, text, meta, payload_id, deleted FROM #{TABLE_ENTRIES} WHERE id = ?",
         id, as: {Int64, String?, String?, String?, Int64?, Int64}
-      row.try { |r| to_entry_row(r) }
+      result_row.try { |row| to_entry_row(row) }
     end
 
     def entry_by_key(key : String) : EntryRow?
-      row = @db.query_one? "SELECT id, key, text, meta, payload_id, deleted FROM #{TABLE_ENTRIES} WHERE key = ?",
+      result_row = @db.query_one? "SELECT id, key, text, meta, payload_id, deleted FROM #{TABLE_ENTRIES} WHERE key = ?",
         key, as: {Int64, String?, String?, String?, Int64?, Int64}
-      row.try { |r| to_entry_row(r) }
+      result_row.try { |row| to_entry_row(row) }
     end
 
     # Resolves several graph positions to their entries in one query, for
@@ -230,6 +230,7 @@ module Vecstolite
           FROM #{TABLE_NODES} n JOIN #{TABLE_ENTRIES} e ON e.id = n.entry_id
           WHERE n.ord IN (#{placeholders})
           SQL
+
 
         args: ords.map(&.as(DB::Any))
       ) do |result_set|
