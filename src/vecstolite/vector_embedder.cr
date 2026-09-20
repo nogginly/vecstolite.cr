@@ -17,5 +17,11 @@ module Vecstolite
 
     # Returns the number of dimensions
     abstract def dimensions : Int32
+
+    # Embeds several texts. Implementations backed by a remote service should
+    # override this to make one request instead of one per text.
+    def embed_all(texts : Array(String)) : Array(Embedding)
+      texts.map { |text| embed(text) }
+    end
   end
 end

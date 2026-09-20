@@ -45,6 +45,22 @@ module Vecstolite
       # from the stored vectors.
       abstract def clear : Nil
 
+      # Graph state a store persists alongside the nodes. Strategies without a
+      # graph have none, and report the empty values a fresh store starts
+      # with.
+      def entry_point : Int32
+        -1
+      end
+
+      def max_layer : Int32
+        -1
+      end
+
+      # Restores graph state read from metadata. Strategies without a graph
+      # have nothing to restore.
+      def reset_with(entry_point : Int32, max_layer : Int32) : Nil
+      end
+
       DEFAULT_EF_SEARCH = 50
 
       # Angular distance: 1 - cosine similarity. Both vectors must be

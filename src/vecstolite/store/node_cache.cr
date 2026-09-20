@@ -40,6 +40,11 @@ module Vecstolite
       # be rebuilt from the stored vectors.
       abstract def clear : Nil
 
+      # Reads the persisted graph into memory. Only strategies that hold nodes
+      # in RAM have anything to do.
+      def load : Nil
+      end
+
       abstract def mode : Symbol
 
       def stats : NamedTuple(mode: Symbol, cached: Int32, bytes: Int64,
@@ -65,7 +70,7 @@ module Vecstolite
         @entry_ids = [] of Int64
       end
 
-      # Loads every persisted node into memory, in `ord` order.
+      # :inherit:
       def load : Nil
         @nodes.clear
         @entry_ids.clear
