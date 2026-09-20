@@ -1,4 +1,4 @@
-# Design: Vecstolite as of 0.7.0
+# Design: Vecstolite 0.7.0
 
 Status: **proposed** — for review before implementation.
 
@@ -141,11 +141,11 @@ orchestrates and owns the transaction boundary.
 HNSW requires contiguous positional ids that `compact!` renumbers. Callers
 require ids that never change. These are separate columns.
 
-Column|Owner |Lifetime                                        |Visible to caller
-------|------|------------------------------------------------|-----------------
-`id`  |caller|permanent; never reused after delete            |yes              
-`key` |caller|optional, unique; supplied at add for upsert    |yes              
-`ord` |index |graph position `0..n-1`; rewritten by `compact!`|no               
+Column|Owner |Lifetime                                                                       |Visible to caller
+------|------|-------------------------------------------------------------------------------|-----------------
+`id`  |caller|permanent; never reused after delete                                           |yes              
+`key` |caller|optional, unique; supplied at add for upsert                                   |yes              
+`ord` |index |graph position `0..n-1`; rewritten by `compact!`; stored only in `vecsto_nodes`|no               
 
 An analogy: `id` is a passport number, `ord` is a seat on today's flight.
 `compact!` reseats every passenger; nobody's passport changes.
@@ -156,7 +156,11 @@ Consequences:
    cleared (0.6.x had to clear it because ids moved).
 2. `search` translates `ord -> id` on the way out, in the same query that
    fetches text and meta.
-3. `vecsto_nodes` is keyed by `ord`.
+3. `vecsto_nodes` is keyed by `ord` and carries the `entry_id` it stands for.
+   That row is the only place the two id spaces meet, so they cannot drift.
+4. `vecsto_vectors` is keyed by `entry_id`, not `ord`, so vectors never move.
+   Compaction renumbers the small nodes table (which it rebuilds anyway)
+   instead of rewriting every vector row.
 
 ---
 
@@ -176,32 +180,36 @@ erDiagram
     vecsto_entries {
         INTEGER id PK "AUTOINCREMENT — stable"
         TEXT key UK "optional caller key"
-        INTEGER ord UK "graph position"
         TEXT text "NULL once tombstoned"
         TEXT meta "JSON serialised M"
         INTEGER payload_id FK
         INTEGER deleted "tombstone flag"
     }
     vecsto_vectors {
-        INTEGER ord PK "narrow table — scanned by Flat and rebuilds"
-        BLOB vector "packed Float32"
+        INTEGER entry_id PK "narrow table — scanned by Flat and rebuilds"
+        BLOB vector "encoding per vecsto_meta"
     }
     vecsto_nodes {
-        INTEGER ord PK
+        INTEGER ord PK "graph position — rewritten by compact!"
+        INTEGER entry_id UK "the only ord to id mapping"
         BLOB neighbours "packed Array(Array(Int32))"
     }
 
     vecsto_payloads ||--o{ vecsto_entries  : "payload_id"
-    vecsto_entries  ||--|| vecsto_vectors  : "ord"
-    vecsto_entries  ||--|| vecsto_nodes    : "ord"
+    vecsto_entries  ||--|| vecsto_vectors  : "entry_id"
+    vecsto_entries  ||--o| vecsto_nodes    : "entry_id"
 ```
 
 `vecsto_meta` keys: `schema_version`, `m`, `ef_construction`, `dimensions`,
 `encoding` (§5.3), `embedder` (name), `index_kind`, `entry_point`, `max_layer`,
 `graph_saved`, `live_count`, `ord_count`.
 
-Indexes: `ord` unique, `key` unique, `payload_id`, and one partial index on
-`deleted = 0` to keep live scans cheap.
+Indexes: `key` unique and `entry_id` unique (both by constraint), `payload_id`,
+and one partial index on `deleted = 0` to keep live scans cheap.
+
+An index strategy that needs no graph — `Index::Flat` — simply leaves
+`vecsto_nodes` empty and works from `vecsto_vectors`, which yields stable ids
+directly.
 
 ### 5.1 Why vectors get their own table
 
