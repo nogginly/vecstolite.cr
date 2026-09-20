@@ -33,6 +33,10 @@ module Vecstolite
     DEFAULT_K         =  5
     DEFAULT_EF_SEARCH = 50
 
+    # How many times a search widens its beam to replace tombstoned hits
+    # before returning a short result rather than scanning the whole graph.
+    MAX_OVERSAMPLE_ROUNDS = 3
+
     # An entry as stored. `text` and `meta` are absent on a deleted entry
     # whose space has been released but whose graph node still routes.
     record Entry(M, P),
@@ -210,6 +214,74 @@ module Vecstolite
       @repo.entry_count
     end
 
+    # Deletes an entry, returning false if it was absent or already deleted.
+    #
+    # The entry is tombstoned rather than removed: its graph node stays in
+    # place as a routing waypoint, because deleting it would sever paths
+    # between the live entries it connects. Its text, metadata and payload
+    # link are released immediately; `compact!` reclaims the rest.
+    def delete(id : Int64) : Bool
+      writable!
+      deleted = false
+      @repo.transaction { deleted = @repo.tombstone(id) }
+      deleted
+    end
+
+    def delete_by_key(key : String) : Bool
+      writable!
+      row = @repo.entry_by_key(key)
+      return false if row.nil? || row.deleted
+      delete(row.id)
+    end
+
+    # Deletes a payload and every entry referencing it, returning how many
+    # entries went. Detaching the entries first is what keeps the foreign key
+    # satisfied without a second deleted flag on the payload row.
+    def delete_payload(id : Int64) : Int32
+      writable!
+      count = 0
+      @repo.transaction do
+        count = @repo.tombstone_by_payload(id)
+        @repo.delete_payload(id)
+      end
+      count
+    end
+
+    # Reclaims the space and graph slots held by deleted entries.
+    #
+    # Tombstoned rows are purged and the graph is rebuilt from the survivors,
+    # in one transaction: a failure part way leaves the store exactly as it
+    # was. Entry ids and keys are untouched, so anything holding an id keeps
+    # working — only positions inside the graph move, and those were never
+    # visible.
+    #
+    # Deliberately manual. A batch of deletions then one `compact!` costs one
+    # rebuild; compacting after each deletion would cost one apiece.
+    def compact! : Nil
+      writable!
+      return if tombstones == 0
+
+      guarded do
+        @repo.transaction do
+          # The graph goes first: its nodes reference the entry rows about to
+          # be purged, and every position is invalid after a rebuild anyway.
+          @index.clear
+          @repo.purge_tombstoned
+          @repo.each_live_vector { |entry_id, vector| @index.add(entry_id, vector) }
+          @index.flush
+          # Flushed inside this transaction, so the graph is on disk whatever
+          # the cache's usual write-through behaviour.
+          @repo.set_graph_meta(@index.entry_point, @index.max_layer, graph_saved: true)
+        end
+      end
+    end
+
+    # Entries deleted but not yet compacted away.
+    def tombstones : Int32
+      readable!
+      @repo.entry_count - @repo.live_count
+    end
+
     # -------------------------------------------------------------------------
     # Payloads
     # -------------------------------------------------------------------------
@@ -247,27 +319,23 @@ module Vecstolite
                       k : Int32 = DEFAULT_K,
                       ef_search : Int32 = DEFAULT_EF_SEARCH) : Array(SearchResult(M, P))
       readable!
-      hits = @index.search(query, k: k, ef: ef_search)
-      return [] of SearchResult(M, P) if hits.empty?
+      return [] of SearchResult(M, P) if k <= 0 || @index.size == 0
 
-      # One payload may back several hits, so each is fetched once.
-      payloads = {} of Int64 => P?
-      hits.compact_map do |hit|
-        row = @repo.entry(hit.entry_id)
-        next if row.nil? || row.deleted
-        text = row.text
-        next if text.nil?
-
-        payload = row.payload_id.try do |pid|
-          payloads.fetch(pid) { payloads[pid] = get_payload(pid) }
-        end
-
-        SearchResult(M, P).new(
-          id: row.id, key: row.key, text: text, score: hit.score,
-          meta: row.meta.try { |json| M.from_json(json) },
-          payload_id: row.payload_id, payload: payload
-        )
+      # A graph keeps tombstoned nodes as routing waypoints, so a search can
+      # return entries that are no longer live. Ask for more and drop them,
+      # widening geometrically. The cap matters: without it a heavily
+      # tombstoned store escalates to scanning the whole graph on every query,
+      # which is a latency cliff rather than a slow answer. Running `compact!`
+      # is what restores full results.
+      results = [] of SearchResult(M, P)
+      request = k
+      MAX_OVERSAMPLE_ROUNDS.times do
+        request = Math.min(request, @index.size)
+        results = resolve(@index.search(query, k: request, ef: ef_search), k)
+        break if results.size >= k || request >= @index.size
+        request *= 4
       end
+      results
     end
 
     # -------------------------------------------------------------------------
@@ -344,6 +412,33 @@ module Vecstolite
           Item(M).new(text, meta, payload_id, key, vector || vectors[position])
         end
       end
+    end
+
+    # Turns hits into results, dropping any whose entry is tombstoned, and
+    # fetching each payload once however many hits share it.
+    private def resolve(hits : Array(Index::Hit), k : Int32) : Array(SearchResult(M, P))
+      payloads = {} of Int64 => P?
+      results = [] of SearchResult(M, P)
+
+      hits.each do |hit|
+        break if results.size >= k
+        row = @repo.entry(hit.entry_id)
+        next if row.nil? || row.deleted
+        text = row.text
+        next if text.nil?
+
+        payload = row.payload_id.try do |pid|
+          payloads.fetch(pid) { payloads[pid] = get_payload(pid) }
+        end
+
+        results << SearchResult(M, P).new(
+          id: row.id, key: row.key, text: text, score: hit.score,
+          meta: row.meta.try { |json| M.from_json(json) },
+          payload_id: row.payload_id, payload: payload
+        )
+      end
+
+      results
     end
 
     private def to_entry(row : Repository::EntryRow) : Entry(M, P)

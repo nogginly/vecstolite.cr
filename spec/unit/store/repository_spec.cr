@@ -225,6 +225,18 @@ Spectator.describe Vecstolite::Repository do
       repo.close
     end
 
+    it "purges a tombstoned entry's node with it" do
+      repo = Repo.open(":memory:", dimensions: dims)
+      id = repo.insert_entry("sky", vec(1_f32, 0_f32, 0_f32, 0_f32))
+      repo.insert_node(ord: 0, entry_id: id, neighbours: [[] of Int32])
+      repo.tombstone(id)
+
+      expect(repo.purge_tombstoned).to eq 1
+      expect(repo.node_count).to eq 0
+      expect(repo.entry_count).to eq 0
+      repo.close
+    end
+
     it "clears the graph without losing entries" do
       repo = Repo.open(":memory:", dimensions: dims)
       id = repo.insert_entry("sky", vec(1_f32, 0_f32, 0_f32, 0_f32))

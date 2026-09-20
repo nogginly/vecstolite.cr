@@ -303,10 +303,16 @@ module Vecstolite
       count
     end
 
-    # Removes tombstoned rows and their vectors, returning how many went.
-    # Callers rebuild the graph in the same transaction: every `ord` is invalid
-    # afterwards.
+    # Removes tombstoned rows, with their vectors and graph nodes, returning
+    # how many entries went.
+    #
+    # Removing individual nodes leaves `ord` values with holes in them, so a
+    # caller must rebuild the graph in the same transaction. The node delete
+    # here exists so this is safe to call in any order, not as a substitute
+    # for that rebuild.
     def purge_tombstoned : Int32
+      @db.exec "DELETE FROM #{TABLE_NODES} WHERE entry_id IN " \
+               "(SELECT id FROM #{TABLE_ENTRIES} WHERE deleted = 1)"
       @db.exec "DELETE FROM #{TABLE_VECTORS} WHERE entry_id IN " \
                "(SELECT id FROM #{TABLE_ENTRIES} WHERE deleted = 1)"
       @db.exec("DELETE FROM #{TABLE_ENTRIES} WHERE deleted = 1").rows_affected.to_i32
