@@ -8,6 +8,13 @@ Spectator.describe Vecstolite::Index::HNSW do
 
   let(dims) { 8 }
 
+  # Recall floor for the HNSW-vs-Flat harness. Measured baseline is 0.752
+  # (2,000 vectors, 32 dimensions, 20 clusters, m=8, ef_construction=64,
+  # ef=16, k=10, corpus seed 5, graph seed 42). Both seeds are fixed, so this
+  # is close to deterministic; the floor sits just below the baseline to catch
+  # a real regression rather than float noise.
+  RECALL_FLOOR = 0.72
+
   # A deterministic unit vector, so a seeded run is reproducible.
   private def unit_vector(rng : Random, dims : Int32) : Vecstolite::Embedding
     values = Array(Float32).new(dims) { rng.rand(-1.0..1.0).to_f32 }
@@ -158,25 +165,65 @@ Spectator.describe Vecstolite::Index::HNSW do
   end
 
   describe "recall against Flat" do
-    # Flat is exact, so it defines the right answer. This is the harness that
-    # turns future tuning into a measurement rather than an argument.
-    it "agrees with an exact scan on most queries" do
-      repo, ids, vectors = corpus(300, dims, seed: 5)
-      index = build(repo, ids, vectors, Cache::Memory.new(repo))
-      flat = Flat.new(repo)
+    # Flat is exact, so it defines the right answer. Three things make this
+    # harness discriminating, and all three matter:
+    #
+    # 1. Held-out queries. A query that is itself in the graph is trivially
+    #    found — the descent lands on it and its neighbours are its true
+    #    nearest neighbours. Corpus members score 1.0 and prove nothing.
+    # 2. Clustered vectors. Uniformly random points are the easy case for a
+    #    navigable graph; real embeddings sit in clusters, which is where
+    #    neighbour selection is tested.
+    # 3. A beam far narrower than the corpus.
+    let(recall_dims) { 32 }
+    let(recall_corpus) { 2_000 }
+    let(recall_k) { 10 }
+    let(recall_ef) { 16 }
+    let(recall_queries) { 25 }
 
-      k = 10
-      queries = 20
-      matched = 0
-      queries.times do |i|
-        query = vectors[i * 7]
-        exact = flat.search(query, k: k).map(&.entry_id).to_set
-        approx = index.search(query, k: k, ef: 64).map(&.entry_id).to_set
-        matched += (exact & approx).size
+    # A vector near *centre*, normalised. Small *spread* means tight clusters.
+    private def near(rng : Random, centre : Array(Float32), spread : Float64) : Vecstolite::Embedding
+      values = centre.map { |c| (c + rng.rand(-spread..spread)).to_f32 }
+      norm = Math.sqrt(values.sum { |v| v * v }).to_f32
+      Vecstolite::Embedding.new(values.size) { |i| values[i] / norm }
+    end
+
+    # Clustered corpus plus held-out queries drawn from the same clusters but
+    # never inserted.
+    private def clustered(count : Int32, dims : Int32, clusters : Int32, queries : Int32, seed : Int32)
+      rng = Random.new(seed)
+      centres = Array.new(clusters) { Array(Float32).new(dims) { rng.rand(-1.0..1.0).to_f32 } }
+
+      repo = Repo.open(":memory:", dimensions: dims)
+      ids = [] of Int64
+      vectors = [] of Vecstolite::Embedding
+      count.times do |i|
+        vector = near(rng, centres[i % clusters], 0.35)
+        vectors << vector
+        ids << repo.insert_entry("entry #{i}", vector)
       end
 
-      recall = matched / (queries * k).to_f
-      expect(recall).to be >= 0.85
+      held_out = Array.new(queries) { |i| near(rng, centres[i % clusters], 0.35) }
+      {repo, ids, vectors, held_out}
+    end
+
+    private def measure_recall(repo, ids, vectors, held_out, index) : Float64
+      flat = Flat.new(repo)
+      matched = 0
+      held_out.each do |query|
+        exact = flat.search(query, k: recall_k).map(&.entry_id).to_set
+        approx = index.search(query, k: recall_k, ef: recall_ef).map(&.entry_id).to_set
+        matched += (exact & approx).size
+      end
+      matched / (held_out.size * recall_k).to_f
+    end
+
+    it "agrees with an exact scan on most queries" do
+      repo, ids, vectors, held_out =
+        clustered(recall_corpus, recall_dims, clusters: 20, queries: recall_queries, seed: 5)
+      index = build(repo, ids, vectors, Cache::Memory.new(repo))
+
+      expect(measure_recall(repo, ids, vectors, held_out, index)).to be >= RECALL_FLOOR
       repo.close
     end
 
