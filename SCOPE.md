@@ -39,15 +39,6 @@ stores they exercised. Decide whether the new API needs equivalents or whether
 
 ### Cheap now, expensive later
 
-**HNSW parameters are not stored — a regression from 0.6.x.** `m` and
-`ef_construction` never reach `vecsto_meta`, so a store built with `m: 8` and
-reopened with the default `Index.hnsw` continues at `m: 16`. Nothing corrupts,
-but graph quality drifts silently. A likely shape: store both at creation, and
-make `Index.hnsw`'s parameters nilable, with `nil` meaning "whatever this store
-was built with, or the default for a new one". An explicit value that differs
-from the stored one then rebuilds, as a change of `index_kind` already does.
-API-shaped, so before 0.7.0.
-
 **Decide on `upsert` (`DESIGN.md` §14, question 2).** Deliberately left out of
 the deletion work. A new vector means a new graph position, so `upsert` is
 delete-plus-add with the caller's id changing underneath — which may be reason

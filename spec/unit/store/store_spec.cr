@@ -362,6 +362,57 @@ Spectator.describe Vecstolite::Store do
     end
   end
 
+  describe "HNSW parameters" do
+    private def stored(path, key) : Int64?
+      repo = Vecstolite::Repository.open(path, dimensions: 64)
+      value = repo.meta_int(key)
+      repo.close
+      value
+    end
+
+    it "records them when the store is created" do
+      Store.open(db_file_name, embedder, index: Index.hnsw(m: 8, ef_construction: 64)) { |store| seeded(store) }
+
+      expect(stored(db_file_name, "m")).to eq 8
+      expect(stored(db_file_name, "ef_construction")).to eq 64
+    end
+
+    it "records the defaults when none are given" do
+      Store.open(db_file_name, embedder) { |store| seeded(store) }
+
+      expect(stored(db_file_name, "m")).to eq Vecstolite::Index::HNSW::DEFAULT_M
+    end
+
+    it "keeps what the store was built with when reopened without them" do
+      Store.open(db_file_name, embedder, index: Index.hnsw(m: 8)) { |store| seeded(store) }
+
+      Store.open(db_file_name, embedder, index: Index.hnsw) do |store|
+        expect(store.search("green grass", k: 1).first.text).to eq "The grass is green."
+      end
+      expect(stored(db_file_name, "m")).to eq 8
+    end
+
+    it "rebuilds when reopened with a different m" do
+      Store.open(db_file_name, embedder, index: Index.hnsw(m: 8, seed: 42)) { |store| seeded(store) }
+
+      Store.open(db_file_name, embedder, index: Index.hnsw(m: 12, seed: 42)) do |store|
+        expect(store.stats[:indexed_nodes]).to eq SENTENCES.size
+        expect(store.search("green grass", k: 1).first.text).to eq "The grass is green."
+      end
+      expect(stored(db_file_name, "m")).to eq 12
+    end
+
+    it "accepts a new ef_construction without rebuilding" do
+      Store.open(db_file_name, embedder, index: Index.hnsw(ef_construction: 64)) { |store| seeded(store) }
+
+      Store.open(db_file_name, embedder, index: Index.hnsw(ef_construction: 128)) do |store|
+        store.add("The moon is pale tonight.")
+      end
+      expect(stored(db_file_name, "ef_construction")).to eq 128
+      expect(stored(db_file_name, "m")).to eq Vecstolite::Index::HNSW::DEFAULT_M
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # cache modes
   # ---------------------------------------------------------------------------

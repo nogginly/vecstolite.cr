@@ -223,7 +223,9 @@ Vecstolite::Store(M, P).open(path, embedder, index: Vecstolite::Index.flat)
 ```
 
 **`Index.hnsw`** (the default) searches a navigable graph: approximate, and
-fast at every size. Its parameters trade build time and memory for recall:
+fast at every size. Its parameters trade build time and memory for recall.
+They are stored with the database: reopen with a bare `Index.hnsw` and the
+store keeps what it was built with.
 
 Parameter        |Default|Higher means                                       
 -----------------|------:|---------------------------------------------------
@@ -237,8 +239,8 @@ is some 50 times faster at a thousand entries — but it is the right choice
 when you need exact results, and it is what the graph's accuracy is measured
 against.
 
-Reopening a store with a different strategy rebuilds the index from the stored
-vectors.
+Reopening a store with a different strategy, or with a different `m`, rebuilds
+the index from the stored vectors.
 
 ### Memory
 

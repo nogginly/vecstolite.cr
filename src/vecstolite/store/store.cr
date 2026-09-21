@@ -125,6 +125,10 @@ module Vecstolite
         create_if_missing: create_if_missing,
         page_cache_bytes: page_cache_bytes)
 
+      # Unspecified parameters take what this store was built with, so the
+      # index below is built with the values actually in force.
+      index_config = index_config.resolve(@repo)
+
       # Assigned before the guarded section below: Crystal does not treat
       # assignments inside a begin/rescue body as definite.
       @cache = cache_mode.build(@repo)
@@ -528,10 +532,22 @@ module Vecstolite
       end
     end
 
+    # Brings the index in line with the database, then records what it was
+    # built with. Recording comes last: a rebuild that fails must not leave
+    # metadata describing parameters the stored graph was never built with,
+    # or the next open would trust it.
     private def restore_index(config : Index::Config) : Nil
       stored_kind = @repo.meta_text("index_kind")
-      @repo.set_meta("index_kind", 1, config.kind.to_s) unless @readonly || stored_kind == config.kind.to_s
+      same_index = stored_kind == config.kind.to_s && config.compatible_with?(@repo)
 
+      prepare_index(config, same_index)
+
+      return if @readonly
+      @repo.set_meta("index_kind", 1, config.kind.to_s) unless stored_kind == config.kind.to_s
+      config.record(@repo)
+    end
+
+    private def prepare_index(config : Index::Config, same_index : Bool) : Nil
       unless config.graph?
         # A graph left by a previous strategy would go stale as entries are
         # added, so it is discarded rather than left to mislead a later open.
@@ -547,14 +563,14 @@ module Vecstolite
       return if @repo.entry_count == 0
 
       meta = @repo.graph_meta
-      if stored_kind == config.kind.to_s && meta[:graph_saved] && @repo.node_count > 0
+      if same_index && meta[:graph_saved] && @repo.node_count > 0
         @cache.load
         @index.reset_with(meta[:entry_point], meta[:max_layer])
         return
       end
 
-      # Either the graph was never persisted, or a different strategy wrote
-      # this database. The vectors are the source of truth either way.
+      # The graph was never persisted, or was built by a different strategy or
+      # with incompatible parameters. The vectors are the source of truth.
       raise Error.new("Index must be rebuilt, but the store is readonly.") if @readonly
       rebuild_index
     end

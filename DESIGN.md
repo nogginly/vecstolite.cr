@@ -204,10 +204,9 @@ erDiagram
 ```
 
 `vecsto_meta` keys: `schema_version`, `dimensions`, `encoding` (§5.3),
-`embedder` (name), `index_kind`, `entry_point`, `max_layer`, `graph_saved`,
-`live_count`. The proposal also listed `ord_count`, which the node table's row
-count made redundant, and `m` and `ef_construction`, which are not yet stored —
-see `SCOPE.md`.
+`embedder` (name), `index_kind`, `m`, `ef_construction`, `entry_point`,
+`max_layer`, `graph_saved`, `live_count`. The proposal also listed `ord_count`,
+which the node table's row count made redundant.
 
 Indexes: `key` unique and `entry_id` unique (both by constraint), `payload_id`,
 and one partial index on `deleted = 0` to keep live scans cheap.
@@ -342,6 +341,16 @@ def self.open(..., &) : Nil   # same arguments; closes even if the block raises
 repository and node cache that only exist once the store opens, so
 `Index.hnsw(...)` returns a `Config` the store builds from. The proposal passed
 `Index::HNSW.new` directly, which could not work.
+
+**HNSW parameters are stored, and reused.** `m` and `ef_construction` are
+written at creation. Left unset on a later open, they take what the store was
+built with, so a bare `Index.hnsw` never silently changes a graph built with
+non-default settings. An explicit `m` that differs rebuilds the graph, since a
+graph cannot be extended with a different edge limit. A different
+`ef_construction` is simply recorded: it shapes how carefully future inserts
+search, not what the graph is. Parameters are recorded only after the index is
+in place, so a rebuild that fails cannot leave metadata describing a graph
+that was never built.
 
 **`CacheMode`, not `Cache`.** The proposal said `Cache.lru(...)`. At the time a
 top-level `Cache(K, V)` existed for the entry cache, so the new type took the
