@@ -62,6 +62,14 @@ stores they exercised. Decide whether the new API needs equivalents or whether
 open, alongside the selectivity thresholds filtering will need. Making it a
 constructor argument now avoids changing the signature once filtering arrives.
 
+**Record that HNSW stays the default (`DESIGN.md` §14, question 1 — closed).**
+Measured at 768 dimensions over a synthetic corpus: the graph answers in
+0.13 ms against Flat's 6.72 ms at 1,000 entries, and 0.31 ms against 46.39 ms
+at 10,000. The crossover sits well below a thousand entries, so there is no
+size at which defaulting to Flat makes sense. Flat's roles are the exact
+option and the recall oracle. Needs writing into `DESIGN.md` §7 and the
+README, not further measurement.
+
 **Decide on `upsert` (`DESIGN.md` §14, question 2).** Deliberately left out of
 the deletion work. A new vector means a new graph position, so `upsert` is
 delete-plus-add with the caller's id changing underneath — which may be reason
@@ -106,6 +114,15 @@ costing more than it catches.
 **`StaticEmbedder#embed_all`.** Still one at a time. Cheap to batch through the
 tokenizer and the embedding table, and worth doing when W2b's bursty document
 ingest is real.
+
+**`Index::Flat` allocates a vector per row.** Scanning 1,000 entries of 768
+dimensions takes 6.72 ms, where the arithmetic alone — some 750k multiply-adds
+— should take well under a millisecond. The cost is per-row: a SQLite fetch
+plus `unpack_vector` building a fresh 3 KB slice that is discarded
+immediately. A reusable buffer through `Repository#each_live_vector` would
+likely take most of it back. Matters for the recall harness and for anyone
+using Flat on a store of any size; does not affect HNSW, which reads a handful
+of nodes per query.
 
 **Drop the `simd` dependency.** Exactly one function is used — `dot`, at three
 call sites (`vector_embedder.cr`, `index/strategy.cr`,
