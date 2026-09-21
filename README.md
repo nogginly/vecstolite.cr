@@ -24,6 +24,10 @@ The fastest way to begin is a `StaticEmbedder`, which runs locally from a
 downloaded model with no server or GPU, and a store on disk.
 
 ```mermaid
+---
+config:
+  layout: elk
+---
 flowchart LR
     T["Text"] --> E["Embedder
     text to vector"]
@@ -154,24 +158,26 @@ store.search_vector(query_vector, k: 3)
 
 ### Bulk ingest
 
-`bulk` adds everything in one transaction. Embedding happens *before* the
-transaction opens — in one call to `embed_all` — so a slow or remote embedder
-never holds the database's write lock.
+`bulk` adds everything in one transaction — entries and any payloads they
+share. Embedding happens *before* the transaction opens, in one call to
+`embed_all`, so a slow or remote embedder never holds the database's write
+lock.
+
+A payload added to a batch has no id until the batch commits, so
+`add_payload` returns a placeholder that `add` accepts in its place:
 
 ```cr
 store.bulk do |batch|
   inputs.each do |input|
-    batch.add(input.en, meta: Lang.new("en"), payload_id: input.payload_id)
-    batch.add(input.fr, meta: Lang.new("fr"), payload_id: input.payload_id)
+    pair = batch.add_payload(input.translation)
+    batch.add(input.en, meta: Lang.new("en"), payload_id: pair)
+    batch.add(input.fr, meta: Lang.new("fr"), payload_id: pair)
   end
 end
 ```
 
-If anything fails, the whole batch rolls back and the store is left as it was.
-
-> Payloads are not yet created inside a batch: add them with `add_payload`
-> first. That means a failed batch can leave payloads with no entries
-> referencing them.
+Existing payload ids work too. If anything fails, the whole batch rolls back —
+payloads included — and the store is left as it was.
 
 ### Searching
 

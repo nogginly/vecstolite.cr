@@ -69,15 +69,6 @@ size at which defaulting to Flat makes sense. Flat's roles are the exact
 option and the recall oracle. Needs writing into `DESIGN.md` §7 and the
 README, not further measurement.
 
-**`bulk` cannot create payloads — a regression from 0.6.x.** The old
-`bulk_add` offered `batch.add_payload`, so payloads and the entries using them
-committed or rolled back together. The new `Batch` defers every insert until
-after embedding, and has no payload method; callers must use
-`Store#add_payload` first, so a failed batch leaves orphaned payload rows. The
-README says so. A likely shape: `Batch#add_payload` returns a placeholder that
-`Batch#add` accepts as `payload:`, resolved to a real id inside the
-transaction. API-shaped, so worth settling before 0.7.0 rather than after.
-
 **Decide on `upsert` (`DESIGN.md` §14, question 2).** Deliberately left out of
 the deletion work. A new vector means a new graph position, so `upsert` is
 delete-plus-add with the caller's id changing underneath — which may be reason

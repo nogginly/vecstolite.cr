@@ -197,6 +197,72 @@ Spectator.describe Vecstolite::Store do
       store.close
     end
 
+    it "creates payloads and their entries together" do
+      store = Store.open(db_file_name, embedder)
+      store.bulk do |batch|
+        pair = batch.add_payload(Pair.new("The sky is blue.", "Le ciel est bleu."))
+        batch.add("The sky is blue.", meta: Lang.new("en"), payload_id: pair)
+        batch.add("Le ciel est bleu.", meta: Lang.new("fr"), payload_id: pair)
+      end
+
+      results = store.search("blue sky", k: 2)
+      expect(results.size).to eq 2
+      expect(results.map(&.payload_id).uniq.size).to eq 1
+      expect(results.first.payload.not_nil!.fr).to eq "Le ciel est bleu."
+      expect(store.stats[:payloads]).to eq 1
+      store.close
+    end
+
+    it "mixes existing payloads with ones queued in the batch" do
+      store = Store.open(":memory:", embedder)
+      existing = store.add_payload(Pair.new("The grass is green.", "L'herbe est verte."))
+
+      store.bulk do |batch|
+        queued = batch.add_payload(Pair.new("The sky is blue.", "Le ciel est bleu."))
+        batch.add("The sky is blue.", payload_id: queued)
+        batch.add("The grass is green.", payload_id: existing)
+      end
+
+      expect(store.search("green grass", k: 1).first.payload_id).to eq existing
+      expect(store.stats[:payloads]).to eq 2
+      store.close
+    end
+
+    it "rolls back queued payloads with the entries" do
+      store = Store.open(db_file_name, embedder)
+      store.add("The sky is blue.", key: "sky")
+
+      expect {
+        store.bulk do |batch|
+          pair = batch.add_payload(Pair.new("The ocean is deep.", "L'océan est profond."))
+          batch.add("The ocean is deep and blue.", payload_id: pair)
+          batch.add("Le ciel est bleu.", key: "sky")
+        end
+      }.to raise_error
+
+      expect(store.stats[:payloads]).to eq 0
+      expect(store.size).to eq 1
+      store.close
+    end
+
+    it "commits a batch holding only payloads" do
+      store = Store.open(":memory:", embedder)
+      store.bulk { |batch| batch.add_payload(Pair.new("The sky is blue.", "Le ciel est bleu.")) }
+      expect(store.stats[:payloads]).to eq 1
+      store.close
+    end
+
+    it "rejects a placeholder from another batch" do
+      store = Store.open(":memory:", embedder)
+      stray = nil.as(Vecstolite::Store::Batch::PendingPayload?)
+      store.bulk { |batch| stray = batch.add_payload(Pair.new("a", "b")) }
+
+      expect {
+        store.bulk { |batch| batch.add("The sky is blue.", payload_id: stray.not_nil!) }
+      }.to raise_error(ArgumentError, /different batch/)
+      store.close
+    end
+
     it "does nothing for an empty batch" do
       store = Store.open(":memory:", embedder)
       store.bulk { |batch| }

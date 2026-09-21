@@ -166,12 +166,19 @@ module Vecstolite
       new_id
     end
 
-    # Adds several entries in one transaction. Embedding happens before the
-    # transaction opens, so a slow embedder never holds the write lock.
+    # Adds several entries, and any payloads they share, in one transaction.
+    # Embedding happens before the transaction opens, so a slow embedder never
+    # holds the write lock. If anything fails, nothing is kept.
+    #
+    # A payload added to the batch has no id until the batch commits, so
+    # `Batch#add_payload` returns a placeholder that `Batch#add` accepts in
+    # place of one:
     #
     # ```
     # store.bulk do |batch|
-    #   batch.add("The sky is blue.", meta: Meta.new("en"))
+    #   pair = batch.add_payload(Translation.new("The sky is blue.", "Le ciel est bleu."))
+    #   batch.add("The sky is blue.", meta: Lang.new("en"), payload_id: pair)
+    #   batch.add("Le ciel est bleu.", meta: Lang.new("fr"), payload_id: pair)
     # end
     # ```
     def bulk(& : Batch(M, P) ->) : Nil
@@ -183,8 +190,10 @@ module Vecstolite
       prepared = batch.prepare(@embedder)
       guarded do
         @repo.transaction do
+          payload_ids = batch.payloads.map { |payload| @repo.insert_payload(payload.to_json) }
           prepared.each do |item|
-            id = @repo.insert_entry(item.text, item.vector, item.meta.try(&.to_json), item.payload_id, item.key)
+            payload_id = batch.resolve(item.payload_id, payload_ids)
+            id = @repo.insert_entry(item.text, item.vector, item.meta.try(&.to_json), payload_id, item.key)
             @index.add(id, item.vector)
           end
           record_graph_state
@@ -367,29 +376,59 @@ module Vecstolite
 
     # Collects entries so a bulk block can embed them all at once.
     class Batch(M, P)
+      # A payload queued in this batch. It becomes a real id when the batch
+      # commits, and is only meaningful to the batch that issued it.
+      record PendingPayload, batch_id : UInt64, index : Int32
+
+      # Either a payload that already exists, or one queued in this batch.
+      alias PayloadRef = Int64 | PendingPayload
+
       record Item(M),
         text : String,
         meta : M?,
-        payload_id : Int64?,
+        payload_id : PayloadRef?,
         key : String?,
         vector : Embedding
 
-      @pending = [] of {String, M?, Int64?, String?, Embedding?}
+      @pending = [] of {String, M?, PayloadRef?, String?, Embedding?}
+      @payloads = [] of P
+
+      # :nodoc:
+      getter payloads
+
+      # Queues *payload*, returning a placeholder to pass as `payload_id:`.
+      def add_payload(payload : P) : PendingPayload
+        @payloads << payload
+        PendingPayload.new(object_id, @payloads.size - 1)
+      end
 
       def add(text : String,
               meta : M? = nil,
-              payload_id : Int64? = nil,
+              payload_id : PayloadRef? = nil,
               key : String? = nil,
               vector : Embedding? = nil) : Nil
+        if payload_id.is_a?(PendingPayload) && payload_id.batch_id != object_id
+          raise ArgumentError.new("Payload placeholder belongs to a different batch.")
+        end
         @pending << {text, meta, payload_id, key, vector}
       end
 
       def empty? : Bool
-        @pending.empty?
+        @pending.empty? && @payloads.empty?
       end
 
       def size : Int32
         @pending.size
+      end
+
+      # :nodoc:
+      # Swaps a placeholder for the id its payload received on insert.
+      def resolve(ref : PayloadRef?, payload_ids : Array(Int64)) : Int64?
+        case ref
+        in PendingPayload then payload_ids[ref.index]
+        in Int64          then ref
+        in Nil            then nil
+        end
       end
 
       # :nodoc:
