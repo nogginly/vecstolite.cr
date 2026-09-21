@@ -30,10 +30,19 @@ Run `ops build-debug` to make a debug build in the `bin/debug/` folder
 
 ## Samples
 
-### `test04`
+Each sample is named for what it shows, and runs with `LexicalEmbedder`, so
+none needs a model download.
 
-End-to-end usage of `Store`: ingest with payloads, reopen, search, delete and
-compact. Needs a static embedder model directory.
+### `quickstart`
+
+The shortest path through the API: open, add, search, delete, compact, reopen.
+Mirrors the README's quick start, so the README's code is known to compile.
+
+### `translations`
+
+Shared payloads: each language's text is its own entry, tagged with metadata,
+all pointing at one translation set. Run with `-- --open` to reopen an
+existing database rather than rebuild it.
 
 ### Benchmark
 

@@ -24,3 +24,7 @@ dependencies:
 targets:
   benchmark:
     main: samples/benchmark.cr
+  quickstart:
+    main: samples/quickstart.cr
+  translations:
+    main: samples/translations.cr

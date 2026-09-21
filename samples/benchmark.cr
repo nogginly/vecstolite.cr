@@ -280,7 +280,7 @@ module Benchmarks
       Store.open(DB_PATH, embedder, index: Vecstolite::Index.flat) do |store|
         fill(store, texts)
         flat_span = Time.measure do
-          probes.each { |query| exact << store.search(query, k: TOP_K).map { |r| {r.text, r.score} } }
+          probes.each { |query| exact << store.search(query, k: TOP_K).map { |hit| {hit.text, hit.score} } }
         end
       end
       puts "| #{size} | flat | #{ms(flat_span)} | #{ms(flat_span / QUERIES)} | 1.000 | 1.000 | #{mb(db_bytes)} |"
@@ -291,7 +291,7 @@ module Benchmarks
       Store.open(DB_PATH, embedder, index: graph, cache: CacheMode.memory) do |store|
         fill(store, texts)
         graph_span = Time.measure do
-          probes.each { |query| approx << store.search(query, k: TOP_K).map { |r| {r.text, r.score} } }
+          probes.each { |query| approx << store.search(query, k: TOP_K).map { |hit| {hit.text, hit.score} } }
         end
       end
 

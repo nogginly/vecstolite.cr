@@ -395,7 +395,7 @@ def delete_by_key(key : String) : Bool
 `add` returns the stable id. Supplying `vector` skips embedding; its dimension
 is checked against the store's.
 
-`upsert` was proposed and has not been built — see §14.
+`upsert` was proposed and deferred — see §14.
 
 ### Payloads
 
@@ -779,10 +779,10 @@ corpus described, so later numbers are comparable rather than merely newer.
 
 1. ~~Should `Index::Flat` be the default for small stores?~~ **Closed: no.** The
    graph is faster at every size measured (§7).
-2. Should `upsert` be offered at all? A new vector means a new graph position,
-   so `upsert` is delete-plus-add with the caller's id changing underneath.
-   That may be reason enough to make callers write both halves themselves,
-   where the id change is unmissable. Open, and tracked in `SCOPE.md`.
+2. ~~Should `upsert` be offered?~~ **Deferred from 0.7.0.** A new vector means
+   a new graph position, so `upsert` would return a different id than the
+   entry had — a trap for callers holding the old one. Delete-then-add makes
+   the change unmissable. Adding it later is not a breaking change.
 3. ~~Is `meta_index` worth building in 0.7.0?~~ **Moved** with filtering to
    after 0.7.0 (§8).
 

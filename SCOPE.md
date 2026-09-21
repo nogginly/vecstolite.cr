@@ -14,8 +14,6 @@ outstanding belongs here, because nobody greps a codebase for open questions.
 
 ## MUST FIX
 
-### Before 0.7.0 ships
-
 **Benchmark results (`DESIGN.md` §13).** The suites exist and `crossover` has
 reported. Still to run at 10,000 entries: `cache` and `footprint`, which
 produce the README sizing rule, then `ingest`, `restart` and `compact` for the
@@ -33,20 +31,16 @@ vector. Confirm against benchmark results, then record the decision in
 budget-per-thousand-entries rule, waiting on the `cache` and `footprint`
 benchmarks.
 
-**Samples.** `samples/test00.cr` through `test03.cr` were deleted with the
-stores they exercised. Decide whether the new API needs equivalents or whether
-`test04.cr` plus the specs are enough.
-
-### Cheap now, expensive later
-
-**Decide on `upsert` (`DESIGN.md` §14, question 2).** Deliberately left out of
-the deletion work. A new vector means a new graph position, so `upsert` is
-delete-plus-add with the caller's id changing underneath — which may be reason
-enough to make callers write both halves themselves.
-
 ---
 
 ## WILL FIX
+
+**`upsert` (`DESIGN.md` §14, question 2 — deferred from 0.7.0).** A changed
+text means a new vector and a new graph position, so the entry's id *must*
+change — and an `upsert` that returns a different id than the entry had is a
+trap for any caller holding the old one. Delete-then-add says the same thing
+in two lines, with the new id impossible to miss. Adding it later is a new
+method, not a breaking change; revisit if idempotent re-ingest (W2b) wants it.
 
 **Metadata filtering (`DESIGN.md` §8).** The `Filter` AST over `json_extract`,
 with selectivity routing between post-filtered HNSW and an exact scan over
