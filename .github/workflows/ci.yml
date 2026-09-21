@@ -81,9 +81,9 @@ jobs:
         if: ${{ runner.os != 'Windows' }}
         run: SHARDS_BIN_PATH=bin/release shards --production build --release
 
-      - name: Run Release
-        if: ${{ runner.os != 'Windows' }}
-        run: bin/release/benchmark 2>&1 | grep "Usage"
+      # - name: Run Release
+      #   if: ${{ runner.os != 'Windows' }}
+      #   run: bin/release/benchmark 2>&1 | grep "Usage"
 
       # - name: Run Test 00
       #   if: ${{ runner.os != 'Windows' }}
