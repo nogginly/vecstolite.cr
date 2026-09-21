@@ -23,6 +23,14 @@ Spectator.describe Vecstolite::Index::HNSW do
   # diverse neighbours, the surplus upper layers were carrying the routing.
   RECALL_FLOOR = 0.94
 
+  # Share of copies found when a vector is stored several times over. Measured
+  # at 1.0; it was 0.79 while neighbour selection compared distances strictly,
+  # rejecting every copy after the first as redundant. Unlike RECALL_FLOOR,
+  # a perfect score is the expected answer here — finding every copy of an
+  # identical vector is a correctness property, not a matter of degree — so
+  # there is no saturation guard, only room for float noise.
+  DUPLICATE_RECALL_FLOOR = 0.98
+
   # A deterministic unit vector, so a seeded run is reproducible.
   private def unit_vector(rng : Random, dims : Int32) : Vecstolite::Embedding
     values = Array(Float32).new(dims) { rng.rand(-1.0..1.0).to_f32 }
@@ -237,6 +245,42 @@ Spectator.describe Vecstolite::Index::HNSW do
         end
       end
       expect(crossings).to be > 0
+      repo.close
+    end
+  end
+
+  describe "duplicate vectors" do
+    # Real corpora repeat themselves — a translation memory holds the same
+    # segment many times. Diversity-based selection is known to struggle
+    # here: a copy at distance zero from a neighbour already chosen looks
+    # redundant, so identical nodes can end up poorly linked to each other.
+    # Asking for as many results as there are copies makes every copy of the
+    # queried vector the only correct answer.
+    it "returns every copy of a repeated vector" do
+      copies = 5
+      distinct = 200
+      repo = Repo.open(":memory:", dimensions: dims)
+      rng = Random.new(21)
+      originals = Array.new(distinct) { unit_vector(rng, dims) }
+
+      copy_ids = Array.new(distinct) { [] of Int64 }
+      originals.each_with_index do |vector, group|
+        copies.times { copy_ids[group] << repo.insert_entry("group #{group}", vector) }
+      end
+
+      cache = Cache::Memory.new(repo)
+      index = Hnsw.new(cache, dims: dims, m: 8, ef_construction: 64, seed: 42)
+      copy_ids.each_with_index do |ids, group|
+        ids.each { |entry_id| index.add(entry_id, originals[group]) }
+      end
+
+      found = 0
+      originals.each_with_index do |vector, group|
+        returned = index.search(vector, k: copies, ef: 50).map(&.entry_id).to_set
+        found += (returned & copy_ids[group].to_set).size
+      end
+
+      expect(found / (distinct * copies).to_f).to be >= DUPLICATE_RECALL_FLOOR
       repo.close
     end
   end

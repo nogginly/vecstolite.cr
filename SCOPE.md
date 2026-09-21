@@ -14,18 +14,21 @@ outstanding belongs here, because nobody greps a codebase for open questions.
 
 ## MUST FIX
 
-**Benchmark results (`DESIGN.md` §13).** The suites exist and `crossover` has
-reported. Still to run at 10,000 entries: `cache` and `footprint`, which
-produce the README sizing rule, then `ingest`, `restart` and `compact` for the
-baseline in `DEVELOPMENT.md`. W1 ran with a 0.5 MB budget against a corpus of
-tens of thousands — about 170 nodes at ~3 KB each — and nobody ever measured
-what that cost.
+**Benchmark re-run at 100,000 (`DESIGN.md` §13).** The 1,000 and 10,000 runs
+are sound and go into `DEVELOPMENT.md`. At 100,000 the corpus was duplicated
+(above) and the footprint suite measured the heap's high-water mark rather
+than memory in use, so every delta read as zero. Both are fixed; `cache`,
+`footprint`, `crossover` and `duplicates` need running again at that size.
+`duplicates` also confirms at scale the neighbour-selection fix for identical
+vectors, which the spec measures only at 1,000 entries.
 
-**`page_size` is inside the schema freeze.** SQLite fixes it at creation, so it
-cannot be changed by a later release without recreating the database. We
-currently leave it at the 4096 default, which fits a 768-dimension Float32
-vector. Confirm against benchmark results, then record the decision in
-`DESIGN.md` §5.1.
+**`page_size` (`DESIGN.md` §5.1).** Now an explicit constant,
+`Repository::PAGE_SIZE`, still 4,096 and overridable at build time with
+`VECSTOLITE_PAGE_SIZE`. The measurement argues against keeping it: 100,000
+entries took 416 MB, or 4.16 KB each for a 3.07 KB vector, because a page
+holds whole rows and a 3 KB row wastes a quarter of a 4 KB page. 16,384-byte
+pages fit five such rows. Measure database size and cache-miss latency at
+4,096 and 16,384, then choose — and record the choice in `DESIGN.md` §5.1.
 
 **README sizing guidance.** `README.md` has a marked gap under "Memory" for a
 budget-per-thousand-entries rule, waiting on the `cache` and `footprint`
@@ -41,6 +44,13 @@ change — and an `upsert` that returns a different id than the entry had is a
 trap for any caller holding the old one. Delete-then-add says the same thing
 in two lines, with the new id impossible to miss. Adding it later is a new
 method, not a breaking change; revisit if idempotent re-ingest (W2b) wants it.
+
+**`compact!` does not shrink the file.** SQLite keeps freed pages for reuse
+rather than returning them, so a store at 10,000 entries measured 41.2 MB
+before compacting half its entries away and 40.9 MB after. The space is reused
+by later inserts; only `VACUUM` returns it to the filesystem, and it rewrites
+the whole file to do so. A `vacuum:` option on `compact!`, or a separate
+`vacuum!`, would give callers the choice.
 
 **Metadata filtering (`DESIGN.md` §8).** The `Filter` AST over `json_extract`,
 with selectivity routing between post-filtered HNSW and an exact scan over

@@ -343,10 +343,17 @@ by construction: after a rollback the database is the source of truth.
 
 Taking simply the nearest `m` candidates leaves a node in a dense cluster with
 every edge pointing inward, and a search that arrives there has no road out.
-Selection instead keeps a candidate only when it is closer to the node being
-linked than to any neighbour already chosen, with rejected candidates filling
-any remaining slots so no node ends up with fewer edges than it would have
-had.
+Selection instead keeps a candidate only when it is at least as close to the
+node being linked as to any neighbour already chosen, with rejected candidates
+filling any remaining slots so no node ends up with fewer edges than it would
+have had.
+
+"At least as close" matters. Identical vectors sit at distance zero from each
+other and from the node, so a strict comparison rejects every copy after the
+first as redundant, and copies end up linked by a single edge. With repeated
+content — a translation memory holding the same segment many times — a search
+then found only four copies in five. With ties kept, it finds all of them.
+This matches hnswlib.
 
 This is not a refinement. Measured against an exact scan on clustered data
 (2,000 vectors, 32 dimensions, 50 clusters, m=8, ef_construction=64, ef=5,

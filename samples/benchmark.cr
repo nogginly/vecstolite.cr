@@ -7,7 +7,7 @@ require "benchmark"
 #
 #   crystal run samples/benchmark.cr --release -- [suite] [options]
 #
-# Suites: cache, footprint, ingest, restart, crossover, compact, all
+# Suites: cache, footprint, ingest, restart, crossover, duplicates, compact, all
 #
 #   --sizes 1000,10000    corpus sizes to sweep
 #   --dims 768            embedding width for the synthetic embedder
@@ -28,8 +28,13 @@ module Benchmarks
   # runs. Fixed here so results are comparable with each other.
   SEED = 42
 
-  # Deterministic sentences with enough variety that neighbours are not all
-  # identical, so runs are comparable with each other.
+  # Deterministic sentences, each with a unique tag, so runs are comparable
+  # and no two entries embed identically.
+  #
+  # The tag is spelled in letters because LexicalEmbedder keeps letters only:
+  # an earlier version used "(12345)", which the tokenizer dropped, so a
+  # 100,000-entry corpus collapsed to 11,760 distinct vectors with up to ten
+  # exact copies each — and measured duplicates rather than scale.
   def self.corpus(count : Int32) : Array(String)
     subjects = ["The sky", "The ocean", "The grass", "The sun", "The moon",
                 "The wind", "The rain", "The snow", "The forest", "The river",
@@ -42,7 +47,21 @@ module Benchmarks
 
     Array(String).new(count) do |i|
       "#{subjects[i % subjects.size]} #{verbs[(i // subjects.size) % verbs.size]} " \
-      "#{adjectives[(i // 7) % adjectives.size]} #{contexts[(i // 13) % contexts.size]} (#{i})."
+      "#{adjectives[(i // 7) % adjectives.size]} #{contexts[(i // 13) % contexts.size]} " \
+      "ref #{letters(i)}."
+    end
+  end
+
+  # *n* in base 26, as lowercase letters: 0 is "a", 26 is "ba".
+  def self.letters(n : Int32) : String
+    String.build do |io|
+      digits = [] of Char
+      loop do
+        digits << ('a' + n % 26)
+        n //= 26
+        break if n == 0
+      end
+      digits.reverse_each { |digit| io << digit }
     end
   end
 
@@ -68,10 +87,14 @@ module Benchmarks
     Dir.glob("#{DB_PATH}*").sum { |file| File.size(file).to_i64 }
   end
 
-  # Collected heap, standing in for per-instance footprint.
+  # Heap in use after a collection, standing in for per-instance footprint.
+  #
+  # Not `heap_size` on its own: that is a high-water mark which never shrinks,
+  # so after a fill has grown the heap every later delta reads as zero.
   def self.heap_bytes : Int64
     GC.collect
-    GC.stats.heap_size.to_i64
+    stats = GC.stats
+    (stats.heap_size - stats.free_bytes).to_i64
   end
 
   def self.mb(bytes : Int64) : String
@@ -134,8 +157,8 @@ module Benchmarks
   def self.footprint(embedder, sizes : Array(Int32)) : Nil
     puts "\n## Per-instance footprint"
     puts
-    puts "| corpus | cache | heap after queries | database |"
-    puts "|-------:|-------|-------------------:|---------:|"
+    puts "| corpus | cache | heap in use | database |"
+    puts "|-------:|-------|------------:|---------:|"
 
     modes = {
       "lru 0.5 MB" => CacheMode.lru(512_i64 * Vecstolite::KB),
@@ -260,6 +283,43 @@ module Benchmarks
   def self.crossover(embedder, sizes : Array(Int32)) : Nil
     puts "\n## Flat against HNSW"
     puts
+    recall_note
+    comparison_header
+
+    sizes.each do |size|
+      texts = corpus(size)
+      compare(embedder, size.to_s, texts, queries(texts), TOP_K)
+    end
+    reset_db
+  end
+
+  # ---------------------------------------------------------------------------
+  # 5b. Duplicates — how the graph copes with identical vectors.
+  #
+  # Real corpora repeat themselves: a translation memory holds the same segment
+  # many times. Each distinct sentence here appears COPIES times with an
+  # identical vector, and each query asks for exactly COPIES results, so the
+  # perfect answer is every copy of the nearest sentence.
+  # ---------------------------------------------------------------------------
+  COPIES = 5
+
+  def self.duplicates(embedder, sizes : Array(Int32)) : Nil
+    puts "\n## Duplicate vectors"
+    puts
+    puts "Each distinct sentence appears #{COPIES} times with an identical vector,"
+    puts "and every query asks for #{COPIES} results."
+    puts
+    comparison_header
+
+    sizes.each do |size|
+      distinct = corpus(size // COPIES)
+      texts = distinct.flat_map { |text| Array.new(COPIES, text) }
+      compare(embedder, "#{size} (#{distinct.size} × #{COPIES})", texts, queries(distinct), COPIES)
+    end
+    reset_db
+  end
+
+  private def self.recall_note : Nil
     puts "Two recall figures, because they disagree when scores tie. *ids* is"
     puts "the share of exact results the graph also returned. *scores* is the"
     puts "share of graph results scoring at least as well as the exact k-th —"
@@ -267,50 +327,54 @@ module Benchmarks
     puts "here but not above. Sparse embeddings tie constantly, so *ids*"
     puts "understates quality on them."
     puts
+  end
+
+  private def self.comparison_header : Nil
     puts "| corpus | strategy | #{QUERIES} queries | per query | recall (ids) | recall (scores) | database |"
     puts "|-------:|----------|-------------------:|----------:|-------------:|----------------:|---------:|"
+  end
 
-    sizes.each do |size|
-      texts = corpus(size)
-      probes = queries(texts)
-
-      reset_db
-      exact = [] of Array({String, Float32})
-      flat_span = Time::Span.zero
-      Store.open(DB_PATH, embedder, index: Vecstolite::Index.flat) do |store|
-        fill(store, texts)
-        flat_span = Time.measure do
-          probes.each { |query| exact << store.search(query, k: TOP_K).map { |hit| {hit.text, hit.score} } }
-        end
-      end
-      puts "| #{size} | flat | #{ms(flat_span)} | #{ms(flat_span / QUERIES)} | 1.000 | 1.000 | #{mb(db_bytes)} |"
-
-      reset_db
-      approx = [] of Array({String, Float32})
-      graph_span = Time::Span.zero
-      Store.open(DB_PATH, embedder, index: graph, cache: CacheMode.memory) do |store|
-        fill(store, texts)
-        graph_span = Time.measure do
-          probes.each { |query| approx << store.search(query, k: TOP_K).map { |hit| {hit.text, hit.score} } }
-        end
-      end
-
-      by_id = 0
-      by_score = 0
-      exact.zip(approx) do |want, got|
-        by_id += (want.map(&.[0]).to_set & got.map(&.[0]).to_set).size
-        next if want.empty?
-
-        # The exact k-th score is the bar any equally good answer clears.
-        threshold = want.last[1] - 1e-5_f32
-        by_score += got.count { |(_, score)| score >= threshold }
-      end
-
-      total = (QUERIES * TOP_K).to_f
-      puts "| #{size} | hnsw | #{ms(graph_span)} | #{ms(graph_span / QUERIES)} | " \
-           "#{"%.3f" % (by_id / total)} | #{"%.3f" % (by_score / total)} | #{mb(db_bytes)} |"
-    end
+  # Runs the same queries through Flat and HNSW and prints a row for each.
+  private def self.compare(embedder, label : String, texts : Array(String),
+                           probes : Array(String), k : Int32) : Nil
     reset_db
+    exact = [] of Array({String, Float32})
+    flat_span = Time::Span.zero
+    Store.open(DB_PATH, embedder, index: Vecstolite::Index.flat) do |store|
+      fill(store, texts)
+      flat_span = Time.measure do
+        probes.each { |query| exact << store.search(query, k: k).map { |hit| {hit.text, hit.score} } }
+      end
+    end
+    puts "| #{label} | flat | #{ms(flat_span)} | #{ms(flat_span / probes.size)} | 1.000 | 1.000 | #{mb(db_bytes)} |"
+
+    reset_db
+    approx = [] of Array({String, Float32})
+    graph_span = Time::Span.zero
+    Store.open(DB_PATH, embedder, index: graph, cache: CacheMode.memory) do |store|
+      fill(store, texts)
+      graph_span = Time.measure do
+        probes.each { |query| approx << store.search(query, k: k).map { |hit| {hit.text, hit.score} } }
+      end
+    end
+
+    by_id = 0
+    by_score = 0
+    exact.zip(approx) do |want, got|
+      # Duplicates share their text, so compare as multisets by counting.
+      want_counts = want.map(&.[0]).tally
+      got_counts = got.map(&.[0]).tally
+      by_id += want_counts.sum { |text, count| Math.min(count, got_counts.fetch(text, 0)) }
+      next if want.empty?
+
+      # The exact k-th score is the bar any equally good answer clears.
+      threshold = want.last[1] - 1e-5_f32
+      by_score += got.count { |(_, score)| score >= threshold }
+    end
+
+    total = (probes.size * k).to_f
+    puts "| #{label} | hnsw | #{ms(graph_span)} | #{ms(graph_span / probes.size)} | " \
+         "#{"%.3f" % (by_id / total)} | #{"%.3f" % (by_score / total)} | #{mb(db_bytes)} |"
   end
 
   # ---------------------------------------------------------------------------
@@ -375,6 +439,7 @@ module Benchmarks
     puts "- Crystal #{Crystal::VERSION}"
     puts "- embedder: #{embedder.model_name}, #{embedder.dimensions} dimensions"
     puts "- corpus sizes: #{sizes.join(", ")}"
+    puts "- SQLite page size: #{Vecstolite::Repository::PAGE_SIZE} bytes"
     {% unless flag?(:release) %}
       puts
       puts "> Built without --release. Timings are not meaningful."
@@ -382,18 +447,20 @@ module Benchmarks
 
     reset_db
     case suite
-    when "cache"     then cache(embedder, sizes)
-    when "footprint" then footprint(embedder, sizes)
-    when "ingest"    then ingest(embedder, sizes)
-    when "restart"   then restart(embedder, sizes)
-    when "crossover" then crossover(embedder, sizes)
-    when "compact"   then compact(embedder, sizes)
+    when "cache"      then cache(embedder, sizes)
+    when "footprint"  then footprint(embedder, sizes)
+    when "ingest"     then ingest(embedder, sizes)
+    when "restart"    then restart(embedder, sizes)
+    when "crossover"  then crossover(embedder, sizes)
+    when "duplicates" then duplicates(embedder, sizes)
+    when "compact"    then compact(embedder, sizes)
     when "all"
       cache(embedder, sizes)
       footprint(embedder, sizes)
       ingest(embedder, sizes)
       restart(embedder, sizes)
       crossover(embedder, sizes)
+      duplicates(embedder, sizes)
       compact(embedder, sizes)
     else abort("Unknown suite: #{suite}")
     end

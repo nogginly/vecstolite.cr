@@ -705,9 +705,13 @@ All fixed.
 8 |Search issues one payload query per result               |fetched once per search          
 9 |Dead code: `truncate_to`, `Candidate#<=>`, `Index#export`|removed                          
 10|LRU cache serves a stale node after eviction             |`write_back` reseats (§10)       
+11|Neighbour selection drops duplicate vectors              |ties kept, as in hnswlib         
 
-Bug 10 was found during implementation, by a volume spec that happened to run
-unseeded.
+Bugs 10 and 11 were found during implementation: 10 by a volume spec that
+happened to run unseeded, and 11 by a benchmark corpus that duplicated itself
+by accident. Duplicate recall was 0.79 with a strict distance comparison in the
+diversity rule, since every copy after the first looked redundant; it is 1.0
+with ties kept, and ordinary recall is unchanged at 0.976.
 
 **The neighbour-selection heuristic landed in this release**, not 0.8 as
 proposed. Bug 6 could not be fixed without it. Measured against Flat on

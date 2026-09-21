@@ -83,24 +83,25 @@ Spectator.describe "Vecstolite::Store at volume" do
   end
 
   it "mostly agrees with an exact scan on the same corpus" do
-    # HNSW is approximate: it may miss a near-tie that an exact scan catches,
-    # and on this corpus many candidates differ by a single token. So the
-    # test is overlap, not identity — identity would be asserting the index
-    # is something it does not claim to be.
+    # HNSW is approximate, and on this corpus many entries tie: sentences
+    # differing only in "seems" and "feels" score identically against a query
+    # sharing neither word. So the test compares scores, not which entry won —
+    # an equally good answer that happens to be a different entry is correct.
     graph = Store.open(db_file_name, embedder,
       index: Vecstolite::Index.hnsw(seed: 7),
       cache: CacheMode.memory)
     fill(graph, corpus)
-    graph_results = graph.search("deep dark river", k: 5).map(&.text)
+    graph_scores = graph.search("deep dark river", k: 5).map(&.score)
     graph.close
 
     exact = Store.open(other_db_file_name, embedder, index: Vecstolite::Index.flat)
     fill(exact, corpus)
-    exact_results = exact.search("deep dark river", k: 5).map(&.text)
+    exact_scores = exact.search("deep dark river", k: 5).map(&.score)
     exact.close
 
-    expect(graph_results.first).to eq exact_results.first
-    expect((graph_results.to_set & exact_results.to_set).size).to be >= 3
+    expect(graph_scores.first).to be_close(exact_scores.first, 1e-5)
+    threshold = exact_scores.last - 1e-5_f32
+    expect(graph_scores.count { |score| score >= threshold }).to be >= 4
   end
 
   it "deletes and compacts at volume" do

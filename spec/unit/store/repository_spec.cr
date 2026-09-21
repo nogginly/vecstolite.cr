@@ -48,6 +48,12 @@ Spectator.describe Vecstolite::Repository do
       expect { Repo.open(db_file_name, dimensions: dims + 1) }.to raise_error(Repo::Error, /dimension/)
     end
 
+    it "creates a database with the configured page size" do
+      repo = Repo.open(db_file_name, dimensions: dims)
+      expect(repo.page_size).to eq Repo::PAGE_SIZE
+      repo.close
+    end
+
     it "records the vector encoding" do
       repo = Repo.open(db_file_name, dimensions: dims)
       expect(repo.encoding).to eq Repo::Encoding::F32

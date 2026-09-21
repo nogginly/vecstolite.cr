@@ -36,6 +36,19 @@ module Vecstolite
 
     DEFAULT_PAGE_CACHE_BYTES = 2_i64 * MB
 
+    # SQLite page size for new databases. Fixed at creation and ignored when
+    # opening an existing one, so it cannot be changed later without
+    # recreating the database.
+    #
+    # Chosen for vector rows: a page holds whole rows only, so a 3 KB vector
+    # (768 Float32 dimensions) in a 4 KB page wastes a quarter of it, and a
+    # vector larger than a page overflows into a second one.
+    #
+    # Overridable at build time, for measuring alternatives:
+    #
+    #   VECSTOLITE_PAGE_SIZE=16384 crystal build ...
+    PAGE_SIZE = {{ (env("VECSTOLITE_PAGE_SIZE") || "4096").to_i }}
+
     # How vectors are encoded in `vecsto_vectors`. Recorded in metadata so a
     # future encoding can be introduced without a schema migration.
     enum Encoding
@@ -125,6 +138,12 @@ module Vecstolite
     # `":memory:"` must be percent-encoded, or its colons parse as a URI port.
     private def connection_uri(path : String) : String
       path == ":memory:" ? "sqlite3://%3Amemory%3A" : "sqlite3://#{path}"
+    end
+
+    # The page size this database was created with, which may differ from
+    # `PAGE_SIZE` if it predates a change to it.
+    def page_size : Int32
+      @db.scalar("PRAGMA page_size").as(Int64).to_i32
     end
 
     def close : Nil
@@ -434,6 +453,10 @@ module Vecstolite
 
     # -------------------------------------------------------------------------
     private def configure(page_cache_bytes : Int64) : Nil
+      # Must precede anything that writes: SQLite fixes the page size when the
+      # first table is created. On an existing database it has no effect.
+      @db.exec "PRAGMA page_size = #{PAGE_SIZE}" unless @readonly
+
       # Negative cache_size is a KiB budget rather than a page count.
       @db.exec "PRAGMA cache_size = -#{(page_cache_bytes // KB).clamp(64_i64, Int32::MAX.to_i64)}"
       return if @readonly

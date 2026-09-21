@@ -259,8 +259,15 @@ module Vecstolite
           break if selected.size >= m
 
           candidate_vector = @cache.get(candidate.ord).vector
+          # A tie keeps the candidate. Identical vectors sit at distance zero
+          # from each other and from the node, and a strict comparison would
+          # reject every copy after the first as redundant — leaving copies
+          # linked to one another by a single edge, so a search reaching the
+          # group finds one or two of them. This matches hnswlib, which
+          # discards a candidate only when a chosen neighbour is strictly
+          # closer to it.
           closer_to_node = selected_vectors.all? do |chosen|
-            candidate.dist < distance(candidate_vector, chosen)
+            candidate.dist <= distance(candidate_vector, chosen)
           end
 
           if closer_to_node
