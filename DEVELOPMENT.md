@@ -9,14 +9,14 @@
 
 ## Getting started
 
-|Command                        |Description                                                                       |
-|-------------------------------|----------------------------------------------------------------------------------|
-|`ops up`                       |Gets everything setup including `crystal` via `apt` or `brew` if applicable.      |
-|`ops build-debug` or `ops bd`  |Make a debug build of `benchmark` sample, in `bin/debug` folder.                  |
-|`ops build-release` or `ops br`|Make a release / production build of `benchmark` sample,  in `bin/release` folder.|
-|`ops lint`                     |Run `ameba` on the source code                                                    |
-|`ops clean`                    |Remove debug and release build files                                              |
-|`ops wipe`                     |In addition to cleaning, remove all compiler caches                               |
+Command                        |Description                                                                       
+-------------------------------|----------------------------------------------------------------------------------
+`ops up`                       |Gets everything setup including `crystal` via `apt` or `brew` if applicable.      
+`ops build-debug` or `ops bd`  |Make a debug build of `benchmark` sample, in `bin/debug` folder.                  
+`ops build-release` or `ops br`|Make a release / production build of `benchmark` sample,  in `bin/release` folder.
+`ops lint`                     |Run `ameba` on the source code                                                    
+`ops clean`                    |Remove debug and release build files                                              
+`ops wipe`                     |In addition to cleaning, remove all compiler caches                               
 
 ### Build and run for development
 
@@ -30,140 +30,116 @@ Run `ops build-debug` to make a debug build in the `bin/debug/` folder
 
 ## Samples
 
+### `test04`
+
+End-to-end usage of `Store`: ingest with payloads, reopen, search, delete and
+compact. Needs a static embedder model directory.
+
 ### Benchmark
 
-Using `ops bd` or `ops br` will build the `benchmark` sample app.
+`samples/benchmark.cr` measures the things the design's sizing decisions rest
+on. Six suites — `cache`, `footprint`, `ingest`, `restart`, `crossover`,
+`compact` — or `all`:
 
-To run the benchmark you will need to inputs:
+```
+crystal run samples/benchmark.cr --release -- crossover --sizes 1000,10000
+```
 
-1. Path to a static embedder
-2. Path to a text file containing sentences per line
+It defaults to `LexicalEmbedder` over a synthetic corpus, so it runs anywhere;
+`--model <dir>` switches to a real `StaticEmbedder`. Results print as markdown
+tables. Record them below with the machine and Crystal version, since a number
+without its conditions is not comparable with anything.
 
-The benchmark adds all the sentences, and then randomly samples 10% to search.
+---
 
 ## How Vecstolite works
 
-This section is for contributors. It describes the internal design in enough depth to orient an experienced Crystal developer who is new to the codebase.
+This section is for contributors. It describes the internal design in enough
+depth to orient an experienced Crystal developer who is new to the codebase.
 
 ### Bird's-eye view
 
 Vecstolite's job is to:
 
 1. Turn text into a fixed-length float vector (embedding).
-2. Store that vector alongside its text and metadata.
+2. Store that vector alongside its text, metadata and any shared payload.
 3. At query time, find the stored vectors most similar to a query vector.
 
-Steps 1–3 map to three layers: **embedders**, **stores**, and the **HNSW index**.
+There is one store class. How it searches, and how much it keeps in memory,
+are arguments rather than separate classes.
 
 ```mermaid
 flowchart TD
-    UC["User code"]
-    VS["VectorStore(M)\nadd / search / close"]
-    EMB["VectorEmbedder\ntext → Embedding\nSlice(Float32), L2-normalised"]
-    HNSW["HNSW::Index\napproximate nearest-neighbour graph"]
-    NS["NodeStore\nvector + neighbour lists per node"]
-    MNS["MemoryNodeStore\nArray — always in RAM"]
-    LRU["LRUNodeStore\nhash + linked list\nbudget-capped"]
-    DSK["DiskNodeStore\nevery access → SQLite"]
-    EC["Cache(Int32, Entry)\nlazy text/meta cache\nTTL-evicted"]
+    APP["User code"]
+    STORE["Store(M, P)
+    add / search / delete / compact!"]
+    EMB["VectorEmbedder
+    text to Embedding, L2-normalised"]
+    IDX["Index::Strategy
+    add / search over entry ids"]
+    FLAT["Index::Flat
+    exact scan, no graph"]
+    HNSW["Index::HNSW
+    navigable small-world graph"]
+    NC["NodeCache::Strategy
+    nodes by graph position"]
+    MEM["Memory
+    all in RAM, written at close"]
+    LRU["LRU
+    byte budget, written through"]
+    DSK["Disk
+    nothing cached"]
+    REPO["Repository
+    every SQL statement"]
+    DB[("SQLite
+    file or :memory:")]
 
-    UC --> VS
-    VS --> EMB
-    VS --> HNSW
-    VS --> EC
-    HNSW --> NS
-    NS --> MNS
-    NS --> LRU
-    NS --> DSK
+    APP --> STORE
+    STORE --> EMB
+    STORE --> IDX
+    STORE --> REPO
+    IDX --- FLAT
+    IDX --- HNSW
+    FLAT --> REPO
+    HNSW --> NC
+    NC --- MEM
+    NC --- LRU
+    NC --- DSK
+    NC --> REPO
+    REPO --> DB
+
+    style STORE stroke:#1f6feb,stroke-width:3px
+    style REPO stroke:#1f6feb,stroke-width:3px
 ```
 
-### Embeddings
+**Ownership rules, which the layering exists to enforce:**
 
-`Embedding` is `Slice(Float32)` — a pointer + length struct pointing to a heap-allocated float buffer. All embeddings are L2-normalised on creation, so cosine similarity reduces to a dot product:
+- `Repository` is the only object that writes SQL. It knows about rows and
+  nothing about graphs, beams or embedding.
+- An `Index::Strategy` knows about vectors and, if it keeps a graph, about
+  positions within it. It speaks stable entry ids at its boundary.
+- `Store` orchestrates, and owns every transaction boundary.
 
-```
-cosine_similarity(a, b) = dot(a, b)   # when ||a|| = ||b|| = 1
-distance(a, b)          = 1 - dot(a, b)
-```
+### Two id spaces
 
-`Slice` assignment copies the 16-byte struct (pointer + size), not the buffer — so passing embeddings around is cheap.
+This is the first thing to understand, because everything else follows from
+it.
 
-### HNSW index
+Column|Owner |Lifetime                                        |Visible to caller
+------|------|------------------------------------------------|-----------------
+`id`  |caller|permanent; never reused                         |yes              
+`key` |caller|optional, unique; supplied at `add`, for upserts|yes              
+`ord` |index |graph position `0..n-1`; rewritten by `compact!`|no               
 
-The HNSW (Hierarchical Navigable Small World) index is an approximate nearest-neighbour graph. Each node lives at one or more layers; higher layers are sparser and act as express lanes for traversal.
+HNSW needs contiguous positional ids that compaction renumbers. Callers need
+ids that never move. An analogy: `id` is a passport number, `ord` is a seat on
+today's flight. `compact!` reseats everyone; nobody's passport changes.
 
-**`HNSW::Index#add(id, vector)`** — inserts a new node:
-1. Draw a random layer for the new node (`random_layer`; geometrically distributed, layer 0 most likely).
-2. Descend from `@max_layer` to `node_layer + 1` using greedy single-hop descent (`greedy_descend`).
-3. For each layer from `node_layer` down to 0, run a beam search (`search_layer`, beam width = `ef_construction`) to find the best neighbours, wire the new node's neighbour list, and wire back-edges on existing nodes.
-4. Prune any neighbour list that exceeds `M` (or `M × 2` at layer 0).
+`vecsto_nodes` is the only place the two meet — it maps one `ord` to one
+`entry_id`. `vecsto_entries` has no `ord` column at all, so the two cannot
+drift apart.
 
-**`HNSW::Index#search(query, k, ef)`** — approximate k-NN:
-1. Greedy descent from `@max_layer` to layer 1 to find a good entry point.
-2. Full beam search at layer 0 with beam width `max(ef, k)`.
-3. Return the top-k candidates as `AnnResult(id, score)` where `score = 1 - distance`.
-
-Key tuning parameters (set at `create` time, stored in DB):
-
-|Parameter        |Default|Effect                                                                  |
-|-----------------|-------|------------------------------------------------------------------------|
-|`M`              |16     |Max neighbours per node per layer. Higher → better recall, more memory. |
-|`ef_construction`|200    |Beam width during insert. Higher → better graph quality, slower inserts.|
-|`ef_search`      |50     |Beam width during search. Higher → better recall, slower queries.       |
-
-### NodeStore
-
-`HNSW::Index` delegates all node storage through the `NodeStore` module. A node is `HNSWNode`: a vector (`Slice(Float32)`) and a per-layer neighbour list (`Array(Array(Int32))`).
-
-```mermaid
-classDiagram
-    class NodeStore {
-        <<module>>
-        +get(id) HNSWNode
-        +append(node) Nil
-        +write_back(id, node) Nil
-        +truncate_to(count) Nil
-        +restore_from_persisted(count)
-        +each_node()
-        +fully_persisted?() Bool
-        +cache_mode() Symbol
-        +cache_hits() Int64
-        +cache_misses() Int64
-        +cache_evictions() Int64
-        +cache_size() Int32
-    }
-    class MemoryNodeStore {
-        -nodes Array~HNSWNode~
-        +write_back() no-op
-        +fully_persisted?() false
-    }
-    class LRUNodeStore {
-        -cache Hash~Int32,Entry~
-        -head Entry
-        -tail Entry
-        -max_bytes Int64
-        +write_back() DB update
-        +fully_persisted?() true
-    }
-    class DiskNodeStore {
-        -total Int32
-        +write_back() DB update
-        +fully_persisted?() true
-    }
-    NodeStore <|-- MemoryNodeStore
-    NodeStore <|-- LRUNodeStore
-    NodeStore <|-- DiskNodeStore
-```
-
-**`MemoryNodeStore`** — `Array(HNSWNode)`, indexed by entry ID. `write_back` is a no-op because `HNSWNode` is a reference type; back-edge mutations are reflected in-place.
-
-**`LRUNodeStore`** — a fixed-memory-budget cache backed by SQLite. Implemented as a `Hash(Int32, Entry)` for O(1) lookup plus a doubly-linked list for O(1) LRU promote/evict. Every `append` and `write_back` writes through to `vecsto_nodes`. On a cache miss, fetches both the vector (from `vecsto_entries`) and neighbour list (from `vecsto_nodes`) in a single JOIN. `fully_persisted?` returns `true` — the DB is always consistent; `save_graph` only needs to update meta.
-
-**`DiskNodeStore`** — same write-through behaviour, zero in-memory cache. Every `get` hits the DB. Intended for memory-constrained environments doing infrequent searches on an already-built index; not suitable for bulk ingest.
-
-### SQLitePayloadVectorStore
-
-`SQLitePayloadVectorStore(M, P)` is the main store. Schema:
+### Schema
 
 ```mermaid
 erDiagram
@@ -173,128 +149,255 @@ erDiagram
         TEXT text
     }
     vecsto_payloads {
-        INTEGER id PK
+        INTEGER id PK "AUTOINCREMENT"
         TEXT content "JSON serialised P"
     }
     vecsto_entries {
-        INTEGER id PK
-        TEXT text
-        BLOB vector "packed Float32 array"
-        TEXT meta "JSON serialised M (nullable)"
+        INTEGER id PK "AUTOINCREMENT, stable"
+        TEXT key UK "optional caller key"
+        TEXT text "NULL once tombstoned"
+        TEXT meta "JSON serialised M"
         INTEGER payload_id FK
-        INTEGER deleted "soft-delete flag"
+        INTEGER deleted "tombstone flag"
+    }
+    vecsto_vectors {
+        INTEGER entry_id PK "narrow table, scanned by Flat and rebuilds"
+        BLOB vector "encoding per vecsto_meta"
     }
     vecsto_nodes {
-        INTEGER id PK
+        INTEGER ord PK "graph position"
+        INTEGER entry_id UK "the only ord to id mapping"
         BLOB neighbours "packed Array(Array(Int32))"
     }
 
     vecsto_payloads ||--o{ vecsto_entries : "payload_id"
-    vecsto_entries  ||--|| vecsto_nodes   : "id"
+    vecsto_entries  ||--|| vecsto_vectors : "entry_id"
+    vecsto_entries  ||--o| vecsto_nodes   : "entry_id"
 ```
 
-**`create` / `open`** call `bootstrap`, which creates tables if needed, reads meta, constructs the `NodeStore` (based on `cache_max_bytes`), and calls `load_from_db`.
+Vectors live in their own narrow table for one reason: SQLite stores a row's
+columns contiguously, so a vector sharing a row with `text` and `meta` drags
+both through the page cache on every scan. Splitting them is like being asked
+to count heads without carrying everyone's luggage. Both scan-shaped
+workloads — exact search and metadata filtering — get cheaper from it.
 
-**`load_from_db`** takes either the fast path (`restore_graph_from_db` — reads `vecsto_nodes` to wire HNSW without re-inserting) or the slow path (`rebuild_index_from_entries` — re-inserts all vectors; used when no graph has been saved yet).
+`vecsto_meta` carries `schema_version`, `dimensions`, `encoding`, `embedder`,
+`index_kind`, `m`, `ef_construction`, `entry_point`, `max_layer`,
+`graph_saved` and `live_count`.
 
-```mermaid
-flowchart TD
-    CR["create / open"] --> BS["bootstrap\ncreate tables, read meta\nbuild NodeStore"]
-    BS --> LDB["load_from_db"]
-    LDB --> GS{"graph_saved\n= 1?"}
-    GS -->|yes| RG["restore_graph_from_db\nread vecsto_nodes → wire HNSW\nfast path"]
-    GS -->|no| RI["rebuild_index_from_entries\nre-insert all vectors\nslow fallback"]
-    RG --> RDY["store ready"]
-    RI --> RDY
+### Embeddings
 
-    RDY --> ADD["add(text)"]
-    ADD --> TX["DB transaction\nINSERT entry + node\nHNSW.add + write_back\nupdate_graph_meta"]
-    TX -->|success| RDY
-    TX -->|exception| ARB["rollback\nrebuild_after_rollback\n(LRU/Disk only)"]
-    ARB --> RDY
-
-    RDY --> BA["bulk_add { |batch| … }"]
-    BA --> BTX["single DB transaction\nbatch.add + batch.add_payload\nwrite_backs + update_graph_meta"]
-    BTX -->|success| RDY
-    BTX -->|exception| RB["rollback\nrebuild_after_rollback\nrestore in-memory state"]
-    RB --> RDY
-
-    RDY --> CL["close"]
-    CL --> SG["save_graph\nMemory: flush vecsto_nodes\nLRU/Disk: update meta only"]
-    SG --> DC["db.close"]
-```
-
-**`add`** embeds the text, inserts into `vecsto_entries` and the HNSW index within a single transaction. For LRU/Disk stores, `HNSW::Index#add` calls `write_back` after each back-edge mutation, writing neighbour changes to `vecsto_nodes` in the same transaction. `update_graph_meta` is called at the end of each transaction so the DB is always crash-recoverable. If the transaction fails, `rebuild_after_rollback` restores the in-memory node store and index to match the rolled-back DB state, preventing stale LRU cache entries from corrupting subsequent adds.
-
-**`bulk_add`** opens one transaction for the entire block. All `add_within_bulk` calls (entry inserts + index mutations) happen inside it. On success: one `fsync`. On exception: transaction rolls back, `rebuild_after_rollback` restores in-memory state to match.
-
-**`save_graph`** — for MemoryNodeStore only: writes all neighbour lists to `vecsto_nodes` then updates meta. For LRU/Disk stores it only updates meta (nodes already persisted write-through).
-
-**`close`** calls `save_graph` (if not readonly) then closes the DB connection.
-
-**`delete_payload(payload_id)`** tombstones every entry referencing the payload (`deleted = 1`, `payload_id` detached) and deletes the payload row, in one transaction. The HNSW graph is untouched — tombstoned nodes remain as routing waypoints; `search` filters and oversamples around them. **`compact!`** physically drops tombstones and rebuilds the graph with a contiguous id space; call it explicitly after a batch of deletes. See Design Decisions below for why.
-
-### Entry cache vs NodeStore
-
-Two separate caches serve different purposes and must not be confused:
-
-|              |`@entry_cache`                                 |`NodeStore`                              |
-|--------------|-----------------------------------------------|-----------------------------------------|
-|Contents      |text, meta, payload_id                         |vector + neighbour lists                 |
-|Access pattern|Top-k results only (after traversal)           |Every hop during traversal               |
-|Eviction      |TTL (`cache_ttl` / `cache_purge_period`)       |LRU by byte budget                       |
-|Implementation|`Cache(Int32, CachedEntry)` in `sucre/cache.cr`|`LRUNodeStore` in `sqlite3_node_store.cr`|
-
-### Neighbour list packing
-
-`NodePacking` in `sqlite3_node_store.cr` serialises `Array(Array(Int32))` to a compact little-endian BLOB:
+`Embedding` is `Slice(Float32)` — a pointer plus length, so passing one around
+copies 16 bytes rather than the buffer. Every embedder must return
+L2-normalised vectors, which is what reduces cosine similarity to a dot
+product:
 
 ```
-[layer_count : Int32] [count₀ : Int32] [id₀ id₁ … : Int32…] [count₁ : Int32] …
+cosine_similarity(a, b) = dot(a, b)   # when ||a|| = ||b|| = 1
+distance(a, b)          = 1 - dot(a, b)
 ```
 
-One BLOB per node row in `vecsto_nodes`. This allows a single DB read to fetch a complete node.
+`VectorEmbedder#l2_normalize!` is shared, and `dimensions` must report what
+`embed` actually returns — a truncated model reports the truncated width, not
+the model's native one, because a store writes that number into its metadata
+and validates every vector against it.
 
-### Durability model
+### Index strategies
 
-- `PRAGMA journal_mode = WAL` — concurrent readers during writes.
-- `PRAGMA synchronous = FULL` — every committed transaction is `fsync`'d.
-- Entry rows and node rows are written in the same transaction, so the DB is always self-consistent at the row level.
-- The HNSW graph topology (`@entry_point`, `@max_layer`, `graph_saved = 1`) is updated in the same transaction as the node write (LRU/Disk) or at `save_graph`/`close` (Memory). If the process crashes before `save_graph`, `load_from_db` falls back to `rebuild_index_from_entries` — slower but always correct.
+**`Index::Flat`** scans every live vector. Exact, O(n) per query, no graph to
+build or persist, nothing to rebuild after an unclean exit. Its roles are
+small stores and serving as the oracle a recall harness measures HNSW
+against.
+
+**`Index::HNSW`** walks a hierarchical navigable small-world graph. Nodes sit
+at one or more layers; upper layers are sparse and act as express lanes.
+
+`add(entry_id, vector)`:
+
+1. Draw a layer for the new node (`random_layer`).
+2. Descend greedily from `max_layer` to `node_layer + 1`.
+3. From the new node's top layer down to 0, beam search with width
+   `ef_construction`, choose neighbours, and wire back-edges.
+4. Prune any neighbour list over its limit (`m`, or `m × 2` at layer 0).
+
+`search(vector, k, ef)` descends greedily to layer 1, beam searches layer 0
+with width `max(ef, k)`, and maps each result back to its entry id.
+
+Parameter        |Default|Effect                                                                            
+-----------------|-------|----------------------------------------------------------------------------------
+`m`              |16     |Neighbours per node per layer. Higher: better recall, more memory, slower inserts.
+`ef_construction`|200    |Beam width while inserting. Higher: better graph, slower ingest.                  
+`ef_search`      |50     |Beam width per query. Higher: better recall, slower queries.                      
+
+### Node caching
+
+`Index::HNSW` reaches nodes only through a `NodeCache::Strategy`, which
+assigns graph positions and decides what stays in RAM.
+
+Strategy|Holds         |Writes                    |Costs                        
+--------|--------------|--------------------------|-----------------------------
+`Memory`|every node    |at `flush`                |unclean exit forces a rebuild
+`LRU`   |up to a budget|through, on every mutation|a read per miss              
+`Disk`  |nothing       |through                   |a read per node visit        
+
+A node is `Index::Node`: a vector and `neighbours[layer]`. Nodes are reference
+types, so a strategy that mutates one must hand it back via `write_back` for
+the change to reach storage — and `LRU#write_back` reseats the cache to the
+object it just persisted. That last detail is not fussiness: without it, a
+node evicted mid-insert could be read back with empty neighbour lists, and a
+later write of that stale copy would strip the node's edges from the graph
+entirely.
+
+### Neighbour packing
+
+Neighbour lists are packed into one BLOB per node, little-endian `Int32`
+throughout:
+
+```
+[layer_count] [count0 id id ...] [count1 id id ...] ...
+```
+
+### Durability
+
+- `PRAGMA journal_mode = WAL`, `PRAGMA synchronous = FULL`.
+- **One rule:** any operation that changes the `ord` space or the graph
+  topology writes its graph metadata — `entry_point`, `max_layer`,
+  `graph_saved`, `live_count` — inside the same transaction as the rows those
+  values describe.
+- If `graph_saved` is 0 at open, or the stored `index_kind` differs from the
+  one requested, the graph is rebuilt from `vecsto_vectors`. Slower, always
+  correct.
 
 ---
 
 ## Design Decisions
 
-Decisions that may look unconventional or prompt a "why didn't they just..." from a new contributor.
+Decisions that may look unconventional or prompt a "why didn't they just..."
+from a new contributor.
 
 ### `DB.connect` instead of `DB.open`
 
-The Crystal DB documentation recommends using `DB::Database` (via `DB.open`) with a connection pool and threading `cnn = tx.connection` through every call inside a transaction block. We use `DB.connect` instead, which returns a single `DB::Connection` with no pool.
+The Crystal DB documentation recommends `DB::Database` (via `DB.open`) with a
+connection pool, threading `cnn = tx.connection` through every call inside a
+transaction block. We use `DB.connect`, which returns a single
+`DB::Connection` with no pool.
 
-**Why:** SQLite is single-writer by design — a connection pool offers no concurrency benefit. More importantly, our transaction blocks call deep into `HNSW::Index#add` → `NodeStore#write_back` → `@db.exec`. Threading `tx.connection` through that entire call stack would couple the `NodeStore` abstraction to DB internals it has no business knowing about. A single `DB::Connection` ensures all exec calls automatically share the same connection and therefore the same transaction, with no API pollution.
+**Why:** SQLite is single-writer by design, so a pool offers no concurrency
+benefit. More importantly, a transaction here spans `Store` → `Index` →
+`NodeCache` → `Repository`; threading `tx.connection` through that stack would
+couple every layer to DB internals it has no business knowing about. A single
+connection makes every `exec` share the same transaction with no API
+pollution.
 
-The `tx.connection` pattern is designed for multi-connection databases (PostgreSQL, MySQL) where the pool is actually used. For SQLite it would be correct but unnecessarily invasive.
+`":memory:"` must be percent-encoded in the connection URI
+(`sqlite3://%3Amemory%3A`), or its colons parse as a port.
 
-### Vectors stored twice in the original design (now fixed)
+### Stable ids and private graph positions
 
-Prior to the `NodeStore` refactor (v0.5.2), embedding vectors were stored twice in memory: once in `@entry_embeddings` (an array of `EntryVector` structs) and again inside each `HNSWNode`. The `NodeStore` abstraction eliminated this by making the node the single owner of both vector and neighbour data. `Slice(Float32)` is a struct (pointer + size, 16 bytes), so assignment copies the struct only — not the underlying float buffer — but the redundant struct array still wasted memory and complicated ownership.
+Callers get `id` and optional `key`; the index gets `ord`. The alternative —
+exposing positional ids, as 0.6.x did — means compaction renumbers everything
+a caller might be holding, which in turn means `compact!` cannot be run
+casually and search results cannot be used to delete what they found.
 
-### `bulk_add` rollback rebuilds the in-memory index
+Keying `vecsto_vectors` by `entry_id` rather than `ord` follows from the same
+choice: vectors never move, so compaction rewrites only the small nodes table
+it was going to rebuild anyway.
 
-When `bulk_add` fails and the DB transaction rolls back, the in-memory HNSW index and `NodeStore` have already been partially mutated. Rather than attempting to undo individual graph mutations (which would require tracking every back-edge change), `rebuild_after_rollback` discards the in-memory state entirely and reconstructs it from the now-clean database. This is O(n) in the pre-bulk entry count but correct by construction — the DB is the source of truth after a rollback.
+### Deletion is a tombstone, compaction is deferred
+
+Removing a node from an HNSW graph means patching every back-edge that points
+at it. Worse, a deleted node's *edges* vanish with it, and upper-layer nodes
+are the express lanes — removing one can sever the only route to a live
+region, silently, with nothing raising.
+
+So `delete` tombstones: `deleted = 1`, with `text`, `meta` and `payload_id`
+released immediately. The node stays wired in as a routing waypoint, which is
+why node reads deliberately do **not** filter on `deleted`. Filtering happens
+at the result layer, where `search` oversamples to replace tombstoned hits —
+capped at `MAX_OVERSAMPLE_ROUNDS`, so a heavily tombstoned store returns a
+short result rather than escalating to a whole-graph scan on every query.
+
+`compact!` is the only thing that physically removes tombstones, and it is
+deliberately manual: a batch of deletes then one `compact!` costs one rebuild,
+where compacting per delete would cost one apiece. Because `ord` is private,
+compaction is invisible to callers — ids and keys survive it untouched.
+
+### A failed write rebuilds the index
+
+A rolled-back transaction restores the rows but not the strategy's in-memory
+state. Rather than tracking and undoing individual graph mutations, `Store`
+discards the index and rebuilds from the surviving vectors. O(n), and correct
+by construction: after a rollback the database is the source of truth.
+
+### Neighbours are chosen for diversity, not proximity alone
+
+Taking simply the nearest `m` candidates leaves a node in a dense cluster with
+every edge pointing inward, and a search that arrives there has no road out.
+Selection instead keeps a candidate only when it is closer to the node being
+linked than to any neighbour already chosen, with rejected candidates filling
+any remaining slots so no node ends up with fewer edges than it would have
+had.
+
+This is not a refinement. Measured against an exact scan on clustered data
+(2,000 vectors, 32 dimensions, 50 clusters, m=8, ef_construction=64, ef=5,
+k=5), recall moved as follows:
+
+                    |layer p = 1/e|layer p = 1/m
+--------------------|-------------|-------------
+nearest-m neighbours|0.752        |0.572        
+diversity neighbours|0.936        |**0.976**    
+
+The bottom-left and top-right cells are why both changes had to be measured
+together. The layer draw is the textbook one — a node reaches layer 1 with
+probability 1/m — but judged on its own it looked like a 24% regression,
+because the surplus upper layers had been compensating for a base graph whose
+edges all pointed inward. `spec/unit/index/hnsw_spec.cr` keeps this honest:
+`RECALL_FLOOR` guards against regression, and a companion assertion fails if
+recall ever reaches a perfect 1.0, which would mean the harness had stopped
+measuring anything.
 
 ### Thread safety is the caller's responsibility
 
-No internal locking. Concurrent access to a store instance must be serialised by the application (e.g. with a `Mutex`). Adding a mutex inside the store would protect individual method calls but not compound operations (`size` + `add` atomically, for example), giving a false sense of safety. The application always knows its own concurrency shape; the store does not.
+No internal locking. Concurrent access must be serialised by the application
+(a `Mutex`, say). A mutex inside the store would protect individual calls but
+not compound operations — `size` then `add` atomically, for instance — giving
+a false sense of safety. The application knows its own concurrency shape; the
+store does not.
 
-### Deletion is tombstone + deferred `compact!`, not graph surgery
+---
 
-HNSW node ids are positional (`id = @index.size` at insert time) and used directly as neighbour-list references throughout the graph. There's no algorithm here for removing a node and patching every back-edge that points to it — that's the hard part of "delete from HNSW" in general, and this codebase doesn't attempt it.
+## Measurements
 
-Instead, `delete_payload` tombstones: it sets `vecsto_entries.deleted = 1` and detaches `payload_id` to `NULL` (the FK is nullable, so this avoids the alternative of either violating `foreign_keys = ON` or adding a parallel `deleted` column to `vecsto_payloads`), then deletes the payload row. The node stays wired into the graph as a routing waypoint — `NodeStore` traversal reads (`LRUNodeStore`/`DiskNodeStore#fetch_from_db`, `restore_graph_from_db`, `load_all_in_memory!`) deliberately do **not** filter `deleted`, because graph connectivity depends on every id in the positional range still resolving to a vector. Filtering only happens at the search-result layer: `search` oversamples (requests more candidates from the index, growing geometrically) and drops tombstoned ids from the returned set.
+Benchmark results, with the conditions that produced them. Replace rather than
+append: a stale number is worse than none.
 
-`compact!` is the only thing that physically removes tombstones — it rewrites `vecsto_entries` to a contiguous `0..n-1` id space over the survivors and rebuilds the graph from scratch. This is deliberately a separate, explicit, caller-triggered step (not run automatically after every delete) so that a batch of deletes costs one O(n) rebuild instead of one per delete.
+### Flat against HNSW
+
+Crystal 1.21.0, `LexicalEmbedder` at 768 dimensions, synthetic corpus, seeded
+graph, 50 queries at k=5.
+
+corpus|strategy|per query|recall (ids)|recall (scores)|database
+-----:|--------|--------:|-----------:|--------------:|-------:
+  1000|flat    |  6.50 ms|       1.000|          1.000|  4.1 MB
+  1000|hnsw    |  0.13 ms|       0.504|          0.960|  4.2 MB
+ 10000|flat    | 45.36 ms|       1.000|          1.000| 40.1 MB
+ 10000|hnsw    |  0.31 ms|       0.712|          0.960| 41.7 MB
+
+Two readings matter here.
+
+**The graph wins at every size.** 50× at a thousand entries, 150× at ten
+thousand. The crossover sits below a thousand, so there is no corpus size at
+which defaulting to an exact scan makes sense. `Flat` is the exact option and
+the oracle, not a small-store default.
+
+**The two recall columns disagree, and the second is the honest one.**
+`LexicalEmbedder` produces sparse hashed bag-of-words vectors, so many entries
+score *exactly* equal against a query. Flat and HNSW then each return a
+different, equally correct five, and set overlap counts that as a miss.
+Anyone benchmarking a vector store with id-overlap recall on sparse
+embeddings will reach the same wrong conclusion.
+
+---
 
 ## Thread safety
 
