@@ -27,7 +27,13 @@ module Vecstolite
                           ef : Int32 = DEFAULT_EF_SEARCH,
                           allowed : Set(Int64)? = nil) : Array(Hit)
 
-      # How many entries the strategy currently indexes, tombstones included.
+      # The most hits a search could return — which is what a caller needs to
+      # know to stop widening a search that cannot yield more.
+      #
+      # This is not the number of live entries. A graph keeps deleted entries
+      # as routing waypoints and can return them, so `HNSW` counts every node;
+      # `Flat` scans live entries only, so it counts those. A new strategy
+      # should report whatever its `search` can actually reach.
       abstract def size : Int32
 
       # Identifies the strategy in stored metadata, so a store can tell when it

@@ -29,12 +29,6 @@ currently leave it at the 4096 default, which fits a 768-dimension Float32
 vector. Confirm against benchmark results, then record the decision in
 `DESIGN.md` §5.1.
 
-**`Index::Strategy#size` means two different things.** `Flat#size` reports live
-entries; `HNSW#size` reports graph slots, tombstones included. `Store#search`
-uses it to bound oversampling, so the inconsistency is currently benign — but
-it is a trap for the next strategy. Pick one meaning and document it on the
-abstract method.
-
 **Reconcile `DESIGN.md` with what was built.** The document has drifted in four
 places, all deliberate but none recorded:
 
@@ -56,10 +50,6 @@ stores they exercised. Decide whether the new API needs equivalents or whether
 `test04.cr` plus the specs are enough.
 
 ### Cheap now, expensive later
-
-**`MAX_OVERSAMPLE_ROUNDS` is a constant.** `DESIGN.md` §8 has it settable at
-open, alongside the selectivity thresholds filtering will need. Making it a
-constructor argument now avoids changing the signature once filtering arrives.
 
 **Record that HNSW stays the default (`DESIGN.md` §14, question 1 — closed).**
 Measured at 768 dimensions over a synthetic corpus: the graph answers in

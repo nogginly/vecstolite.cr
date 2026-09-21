@@ -314,8 +314,9 @@ So `delete` tombstones: `deleted = 1`, with `text`, `meta` and `payload_id`
 released immediately. The node stays wired in as a routing waypoint, which is
 why node reads deliberately do **not** filter on `deleted`. Filtering happens
 at the result layer, where `search` oversamples to replace tombstoned hits —
-capped at `MAX_OVERSAMPLE_ROUNDS`, so a heavily tombstoned store returns a
-short result rather than escalating to a whole-graph scan on every query.
+capped by `oversample_rounds` (3 unless set at open), so a heavily tombstoned
+store returns a short result rather than escalating to a whole-graph scan on
+every query.
 
 `compact!` is the only thing that physically removes tombstones, and it is
 deliberately manual: a batch of deletes then one `compact!` costs one rebuild,
@@ -342,7 +343,7 @@ This is not a refinement. Measured against an exact scan on clustered data
 (2,000 vectors, 32 dimensions, 50 clusters, m=8, ef_construction=64, ef=5,
 k=5), recall moved as follows:
 
-                    |layer p = 1/e|layer p = 1/m
+&nbsp;              |layer p = 1/e|layer p = 1/m
 --------------------|-------------|-------------
 nearest-m neighbours|0.752        |0.572        
 diversity neighbours|0.936        |**0.976**    

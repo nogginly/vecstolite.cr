@@ -245,6 +245,23 @@ Spectator.describe "Vecstolite::Store deletion" do
     end
   end
 
+  describe "oversample_rounds" do
+    it "takes a custom limit and still searches past deletions" do
+      store = Store.open(":memory:", embedder, oversample_rounds: 5)
+      ids = seeded(store)
+      ids[0..3].each { |id| store.delete(id) }
+
+      expect(store.oversample_rounds).to eq 5
+      expect(store.search("the", k: 2).size).to eq 2
+      store.close
+    end
+
+    it "must allow at least one round" do
+      expect { Store.open(":memory:", embedder, oversample_rounds: 0) }
+        .to raise_error(ArgumentError, /at least 1/)
+    end
+  end
+
   describe "heavily tombstoned store" do
     it "returns what is left rather than escalating to a full scan" do
       store = Store.open(":memory:", embedder)

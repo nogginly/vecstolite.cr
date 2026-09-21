@@ -33,9 +33,9 @@ module Vecstolite
     DEFAULT_K         =  5
     DEFAULT_EF_SEARCH = 50
 
-    # How many times a search widens its beam to replace tombstoned hits
-    # before returning a short result rather than scanning the whole graph.
-    MAX_OVERSAMPLE_ROUNDS = 3
+    # How many times a search widens to replace deleted hits before returning
+    # a short result, rather than escalating to a whole-graph scan.
+    DEFAULT_OVERSAMPLE_ROUNDS = 3
 
     # An entry as stored. `text` and `meta` are absent on a deleted entry
     # whose space has been released but whose graph node still routes.
@@ -59,6 +59,7 @@ module Vecstolite
 
     getter path : String
     getter embedder : VectorEmbedder
+    getter oversample_rounds : Int32
     getter? closed : Bool
 
     @repo : Repository
@@ -70,6 +71,11 @@ module Vecstolite
     #
     # Raises `Error` if the database was written by a different embedder or
     # with a different vector dimension, unless *verify_embedder* is false.
+    #
+    # *oversample_rounds* bounds how hard a search works to replace deleted
+    # entries in its results. Each round asks the index for four times as
+    # many hits; past the limit, a search returns fewer than `k` rather than
+    # slowing to a whole-graph scan. Compacting is what restores full results.
     def self.open(path : String,
                   embedder : VectorEmbedder,
                   index : Index::Config = Index.hnsw,
@@ -77,8 +83,10 @@ module Vecstolite
                   readonly : Bool = false,
                   create_if_missing : Bool = true,
                   verify_embedder : Bool = true,
-                  page_cache_bytes : Int64 = Repository::DEFAULT_PAGE_CACHE_BYTES) : self
-      new(path, embedder, index, cache, readonly, create_if_missing, verify_embedder, page_cache_bytes)
+                  page_cache_bytes : Int64 = Repository::DEFAULT_PAGE_CACHE_BYTES,
+                  oversample_rounds : Int32 = DEFAULT_OVERSAMPLE_ROUNDS) : self
+      new(path, embedder, index, cache, readonly, create_if_missing, verify_embedder,
+        page_cache_bytes, oversample_rounds)
     end
 
     # Opens the store, yields it, and closes it even if the block raises.
@@ -89,8 +97,10 @@ module Vecstolite
                   readonly : Bool = false,
                   create_if_missing : Bool = true,
                   verify_embedder : Bool = true,
-                  page_cache_bytes : Int64 = Repository::DEFAULT_PAGE_CACHE_BYTES, &)
-      store = open(path, embedder, index, cache, readonly, create_if_missing, verify_embedder, page_cache_bytes)
+                  page_cache_bytes : Int64 = Repository::DEFAULT_PAGE_CACHE_BYTES,
+                  oversample_rounds : Int32 = DEFAULT_OVERSAMPLE_ROUNDS, &)
+      store = open(path, embedder, index, cache, readonly, create_if_missing, verify_embedder,
+        page_cache_bytes, oversample_rounds)
       begin
         yield store
       ensure
@@ -105,7 +115,9 @@ module Vecstolite
                              @readonly : Bool,
                              create_if_missing : Bool,
                              verify_embedder : Bool,
-                             page_cache_bytes : Int64)
+                             page_cache_bytes : Int64,
+                             @oversample_rounds : Int32)
+      raise ArgumentError.new("oversample_rounds must be at least 1") if @oversample_rounds < 1
       @closed = false
       @repo = Repository.open(@path,
         dimensions: @embedder.dimensions,
@@ -338,7 +350,7 @@ module Vecstolite
       # is what restores full results.
       results = [] of SearchResult(M, P)
       request = k
-      MAX_OVERSAMPLE_ROUNDS.times do
+      @oversample_rounds.times do
         request = Math.min(request, @index.size)
         results = resolve(@index.search(query, k: request, ef: ef_search), k)
         break if results.size >= k || request >= @index.size
