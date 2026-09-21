@@ -56,4 +56,16 @@ actions:
     command: |
       ops bb16
       ./bin/release/benchmark-16k cache --sizes 10000,100000 | tee bench-p16k.md
-      ./bin/release/benchmark-16k crossover --sizes 10000,100000 | tee bench-p16k.md
+      ./bin/release/benchmark-16k crossover --sizes 10000,100000 | tee -a bench-p16k.md
+  bench-pair:
+    description: Paired 4 KB / 16 KB page-size comparison; THIS TAKES A LONG TIME.
+    command: |
+      ops bb && ops bb16
+      for bin in benchmark benchmark-16k; do
+        out=bench-pair-$bin.md
+        ./bin/release/$bin cache     --sizes 10000,100000 | tee $out
+        ./bin/release/$bin crossover --sizes 10000,100000 | tee -a $out
+        ./bin/release/$bin ingest    --sizes 10000        | tee -a $out
+      done
+      ./bin/release/benchmark duplicates --sizes 10000,100000 | tee -a bench-pair-benchmark.md
+      ./bin/release/benchmark footprint  --sizes 10000,100000 | tee -a bench-pair-benchmark.md
