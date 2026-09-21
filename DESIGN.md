@@ -1,6 +1,9 @@
 # Design: Vecstolite 0.7.0
 
-Status: **proposed** — for review before implementation.
+Status: **accepted, as built** — reconciled with the implementation on the
+`redesign-for-0.7.0` branch. Where the build departed from the original
+proposal, the text below describes what was built and says why. Outstanding
+work lives in `SCOPE.md`, not here.
 
 This document describes the 0.7.0 redesign of `vecstolite.cr`. It is a breaking
 release: the API, the schema and the class structure all change. Databases
@@ -42,10 +45,10 @@ ships, not deferred — see §13.
 Removed                                  |Replacement                                 
 -----------------------------------------|--------------------------------------------
 `SQLiteVectorStore` (deprecated)         |`Store(M, P)`                               
-`LinearVectorStore`                      |`Store(M, P)` with `index: Index::Flat`     
+`LinearVectorStore`                      |`Store(M, P)` with `index: Index.flat`      
 `MemoryVectorStore`                      |`Store(M, P)` opened at `":memory:"`        
 `VectorStore(M)`, `IndexedVectorStore(M)`|nothing — one class needs no abstract module
-`load_all_in_memory!`                    |`cache: Cache::Memory` at open              
+`load_all_in_memory!`                    |`cache: CacheMode.memory` at open           
 `create` (factory)                       |`open(..., create_if_missing: true)`        
 
 `MemoryVectorStore` held Crystal objects directly; `":memory:"` round-trips
@@ -85,8 +88,8 @@ Implications carried through:
 1. W2a and W2b write continuously or in bursts, so insert-path write
    amplification matters more than saving a lookup on the read path (§5.1).
 2. They restart often, so a graph rebuild at open is a recurring cost rather
-   than a one-off. `Cache::Memory` does not write nodes through and invites
-   exactly that; `Cache::LRU` is the default (§6).
+   than a one-off. `CacheMode.memory` does not write nodes through and
+   invites exactly that; `CacheMode.lru` is the default (§6).
 3. They run N instances per machine, so per-instance memory must be countable —
    including SQLite's own per-connection page cache, which sits outside
    `cache_max_bytes` (§6).
@@ -200,9 +203,11 @@ erDiagram
     vecsto_entries  ||--o| vecsto_nodes    : "entry_id"
 ```
 
-`vecsto_meta` keys: `schema_version`, `m`, `ef_construction`, `dimensions`,
-`encoding` (§5.3), `embedder` (name), `index_kind`, `entry_point`, `max_layer`,
-`graph_saved`, `live_count`, `ord_count`.
+`vecsto_meta` keys: `schema_version`, `dimensions`, `encoding` (§5.3),
+`embedder` (name), `index_kind`, `entry_point`, `max_layer`, `graph_saved`,
+`live_count`. The proposal also listed `ord_count`, which the node table's row
+count made redundant, and `m` and `ef_construction`, which are not yet stored —
+see `SCOPE.md`.
 
 Indexes: `key` unique and `entry_id` unique (both by constraint), `payload_id`,
 and one partial index on `deleted = 0` to keep live scans cheap.
@@ -225,7 +230,7 @@ bytes read by:
 1. `Index::Flat` on every query;
 2. graph rebuilds (`compact!`, index-kind change, recovery from
    `graph_saved = 0`);
-3. `Cache::Memory` warm-up at open.
+3. `CacheMode.memory` warm-up at open.
 
 It also cuts the other way. Metadata filter scans (§8) now walk a table with no
 4 KB blob in it, which is the difference between `json_extract` over ~200-byte
@@ -308,8 +313,8 @@ one row; retrofitting it costs a migration script.
 store = Vecstolite::Store(Meta, Payload).open(
   "notes.db",
   embedder,
-  index: Vecstolite::Index::HNSW.new(m: 16, ef_construction: 200),
-  cache: Vecstolite::Cache.lru(512 * Vecstolite::MB),
+  index: Vecstolite::Index.hnsw(m: 16, ef_construction: 200),
+  cache: Vecstolite::CacheMode.lru(256 * Vecstolite::MB),
 )
 
 Vecstolite::Store(Meta, Payload).open("notes.db", embedder) do |store|
@@ -321,47 +326,56 @@ end
 
 ```cr
 def self.open(path : String,
-              embedder : Embedder,
-              index : Index::Strategy = Index::HNSW.new,
-              cache : Cache = Cache.lru(DEFAULT_CACHE_MAX_BYTES),
+              embedder : VectorEmbedder,
+              index : Index::Config = Index.hnsw,
+              cache : CacheMode = CacheMode.lru,
               readonly : Bool = false,
               create_if_missing : Bool = true,
               verify_embedder : Bool = true,
-              cache_ttl : Time::Span? = nil,
-              cache_purge_period : Time::Span? = nil,
-              page_cache_bytes : Int32 = DEFAULT_PAGE_CACHE_BYTES) : self
+              page_cache_bytes : Int64 = Repository::DEFAULT_PAGE_CACHE_BYTES,
+              oversample_rounds : Int32 = DEFAULT_OVERSAMPLE_ROUNDS) : self
 
-def self.open(path, embedder, **options, &) : Nil
+def self.open(..., &) : Nil   # same arguments; closes even if the block raises
 ```
 
-**Memory accounting.** `cache_max_bytes` budgets the node cache only. SQLite
-keeps its own per-connection page cache (default ~2 MB) on top, so a store's
-real footprint is roughly `node cache + page cache + graph metadata +
-connection overhead`. For W2 (§2.1), where N isolated instances share a
-machine, `page_cache_bytes` is exposed so the total is countable rather than
-discovered under memory pressure. `stats` reports the two figures separately.
+`index` and `cache` are *descriptions*, not built objects: a strategy needs the
+repository and node cache that only exist once the store opens, so
+`Index.hnsw(...)` returns a `Config` the store builds from. The proposal passed
+`Index::HNSW.new` directly, which could not work.
 
-**Cache mode and restart cost.** `Cache::Memory` does not write nodes through;
-the graph is persisted at `close` (§10). An unclean exit forces a rebuild from
-vectors at the next open — tolerable for a batch job, costly for an agent that
-restarts routinely. `Cache::LRU` is therefore the default, and `Cache::Memory`
-is documented as a batch-workload choice rather than simply "the fast one".
+**`CacheMode`, not `Cache`.** The proposal said `Cache.lru(...)`. At the time a
+top-level `Cache(K, V)` existed for the entry cache, so the new type took the
+longer name. That class is gone and the rename is now possible; `CacheMode` was
+kept because it says what it is — a choice of mode, not a cache.
 
-`open` creates the database when missing, mirroring `DB.open`. The block form
-closes the store (flushing the graph) even when the block raises.
+The proposal's `cache_ttl` and `cache_purge_period` belonged to the removed
+entry cache and are gone with it.
 
-`verify_embedder` compares `embedder.model_name` and `dimensions` against
-`vecsto_meta` and raises on mismatch. Pass `false` only if the vectors were
-produced elsewhere and are known to be compatible.
+**Memory accounting.** The `CacheMode.lru` budget covers graph nodes only.
+SQLite keeps its own per-connection page cache (default ~2 MB) on top, so a
+store's real footprint is roughly `node cache + page cache + connection
+overhead`. For W2 (§2.1), where N isolated instances share a machine,
+`page_cache_bytes` is exposed so the total is countable rather than discovered
+under memory pressure.
+
+**Cache mode and restart cost.** `CacheMode.memory` does not write nodes
+through; the graph is persisted at `close` (§10). An unclean exit forces a
+rebuild from vectors at the next open — tolerable for a batch job, costly for
+an agent that restarts routinely. `CacheMode.lru` is therefore the default, and
+`memory` is documented as a batch-workload choice rather than "the fast one".
+
+`verify_embedder` compares the embedder's name and dimensions against
+`vecsto_meta` and raises on mismatch.
+
+`oversample_rounds` bounds how hard a search works to replace deleted entries
+(§10). It is an argument rather than a constant so that filtering, when it
+arrives, can sit alongside its own thresholds without changing the signature.
 
 ### Entries
 
 ```cr
 def add(text : String, meta : M? = nil, payload_id : Int64? = nil,
         key : String? = nil, vector : Embedding? = nil) : Int64
-
-def upsert(key : String, text : String, meta : M? = nil,
-           payload_id : Int64? = nil, vector : Embedding? = nil) : Int64
 
 def get(id : Int64) : Entry(M, P)?
 def get_by_key(key : String) : Entry(M, P)?
@@ -372,10 +386,7 @@ def delete_by_key(key : String) : Bool
 `add` returns the stable id. Supplying `vector` skips embedding; its dimension
 is checked against the store's.
 
-`upsert` replaces the entry with that key: the old `id` is tombstoned and a new
-one issued, because the vector (and therefore the graph position) changes.
-Callers holding the old id get `nil` from `get`. Stated plainly rather than
-pretending ids are mutable.
+`upsert` was proposed and has not been built — see §14.
 
 ### Payloads
 
@@ -383,36 +394,45 @@ pretending ids are mutable.
 def add_payload(payload : P) : Int64
 def get_payload(id : Int64) : P?
 def update_payload(id : Int64, payload : P) : Bool
-def delete_payload(id : Int64) : Int32          # returns entries tombstoned
-def entries_for_payload(id : Int64) : Array(Entry(M, P))
+def delete_payload(id : Int64) : Int32   # entries tombstoned
 ```
 
 `update_payload` rewrites content only; no entries are re-embedded, since the
 embedding derives from the entry text, not the payload.
 
+The proposed `entries_for_payload` was not built; nothing needed it.
+
 ### Bulk
 
 ```cr
 def bulk(& : Batch(M, P) ->) : Nil
+
+store.bulk do |batch|
+  pair = batch.add_payload(Translation.new("The sky is blue.", "Le ciel est bleu."))
+  batch.add("The sky is blue.", payload_id: pair)
+  batch.add("Le ciel est bleu.", payload_id: pair)
+end
 ```
 
-One transaction for the whole block, as today. Two changes:
+One transaction for entries *and* the payloads they share. Embedding happens
+before the transaction opens, via `embed_all`, so a slow embedder never holds
+the write lock.
 
-1. `Batch#add` accepts `vector:`, so a caller may embed in batch beforehand.
-2. `Batch#embed_all(texts : Array(String)) : Array(Embedding)` is **not**
-   offered — embedding inside the transaction is what we are trying to avoid.
-   Batch embedding lives on the embedder (§9) and is called before `bulk`.
+Because inserts are deferred until embedding is done, a payload queued in a
+batch has no id yet. `Batch#add_payload` returns a placeholder that
+`Batch#add` accepts in place of an id, and the store resolves it inside the
+transaction. A placeholder is only valid in the batch that issued it. This
+differs from 0.6.x, where inserts happened immediately and `add_payload`
+returned a real id.
 
 ### Search
 
 ```cr
 def search(query : String, k : Int32 = 5,
-           ef_search : Int32 = 50,
-           filter : Filter? = nil) : Array(SearchResult(M, P))
+           ef_search : Int32 = 50) : Array(SearchResult(M, P))
 
 def search_vector(vector : Embedding, k : Int32 = 5,
-                  ef_search : Int32 = 50,
-                  filter : Filter? = nil) : Array(SearchResult(M, P))
+                  ef_search : Int32 = 50) : Array(SearchResult(M, P))
 
 record SearchResult(M, P),
   id : Int64, key : String?, text : String, score : Float32,
@@ -420,15 +440,18 @@ record SearchResult(M, P),
 ```
 
 `payload_id` is exposed so a result can be deleted without a second lookup.
-Payloads resolved during one `search` call are memoised, so ten results sharing
-one payload cost one query, not ten (0.6.x issued one per result).
+Payloads resolved during one search are fetched once however many results
+share them.
+
+The `filter:` argument is deferred with filtering itself (§8). Adding a
+defaulted argument later is not a breaking change.
 
 ### Maintenance and observability
 
 ```cr
-def size : Int32          # live entries
-def ord_size : Int32      # graph slots, including tombstones
-def tombstones : Int32    # ord_size - size
+def size : Int32         # live entries
+def total : Int32        # entry rows, tombstones included
+def tombstones : Int32   # total - size
 def compact! : Nil
 def stats : NamedTuple
 def close : Nil
@@ -437,7 +460,9 @@ def closed? : Bool
 
 `size` means live entries — 0.6.x returned the graph slot count, tombstones
 included. `live_count` is maintained in `vecsto_meta` inside the same
-transaction as every insert and delete, so `size` stays O(1).
+transaction as every insert and delete, so `size` stays O(1). The proposal's
+`ord_size` became `total`, which counts entry rows: graph positions are not
+something a caller should need to know exist.
 
 ---
 
@@ -445,42 +470,73 @@ transaction as every insert and delete, so `size` stays O(1).
 
 ```cr
 module Vecstolite::Index
-  record Hit, ord : Int32, score : Float32
+  record Hit, entry_id : Int64, score : Float32
 
   abstract class Strategy
-    abstract def add(ord : Int32, vector : Embedding) : Nil
+    abstract def add(entry_id : Int64, vector : Embedding) : Nil
     abstract def search(vector : Embedding, k : Int32, ef : Int32,
-                        allowed : Set(Int32)?) : Array(Hit)
-    abstract def size : Int32
+                        allowed : Set(Int64)?) : Array(Hit)
+    abstract def size : Int32   # the most hits a search could return
     abstract def kind : Symbol
+    abstract def flush : Nil
+    abstract def clear : Nil
   end
 end
 ```
 
-**`Index::Flat`** streams vectors from the repository and scans. Exact by
-construction; O(n) per query; no graph, so nothing to save or restore and
-`compact!` is pure row cleanup. `allowed` is applied during the scan at no cost.
+**Hits carry entry ids, not graph positions.** The proposal had `Hit` report
+`ord`. Writing `Flat` settled it: an exact scan has no ords to report. So `HNSW`
+maps each result back through its node cache, `Flat` reports what it already
+has, and graph positions never leave the index layer. `allowed` is a set of
+entry ids both strategies can apply the same way.
 
-**`Index::HNSW`** is the current implementation, with the fixes in §11.
-`allowed` is applied as a post-filter with oversampling (§8).
+**`Index::Flat`** scans `vecsto_vectors`. Exact by construction, O(n) per
+query, no graph — nothing to save, restore or rebuild, and `compact!` is pure
+row cleanup.
 
-`index_kind` is recorded in meta. Opening with a different strategy than the one
-stored rebuilds the index from entries rather than raising — the vectors are the
-source of truth and both strategies derive from them.
+**`Index::HNSW`** is the graph index, with the corrections in §11.
 
-**Recall harness.** Because both strategies live in one shard, recall becomes
-measurable:
+`index_kind` is recorded in meta. Opening with a different strategy rebuilds
+the index from the stored vectors rather than raising, since the vectors are
+the source of truth. Switching *to* Flat discards the old graph, which would
+otherwise go stale as entries are added.
+
+**HNSW is the default at every size.** The question was whether small stores —
+W2a's memories, say — should default to Flat. Measured at 768 dimensions, the
+graph answers in 0.13 ms against Flat's 6.50 ms at a thousand entries, and
+0.31 ms against 45.36 ms at ten thousand. The crossover sits below a thousand
+entries, so there is no size at which defaulting to an exact scan makes sense.
+Flat is the exact option and the oracle. Figures and conditions are recorded in
+`DEVELOPMENT.md`.
+
+**Recall harness.** Because both strategies live in one shard, recall is
+measurable rather than arguable:
 
 ```
 recall@k = |hnsw_hits ∩ flat_hits| / k
 ```
 
-A spec asserts a floor over a fixed corpus and seed. Every future HNSW change is
-then a measurement, not an argument.
+`spec/unit/index/hnsw_spec.cr` asserts a floor over a fixed, seeded corpus.
+Three properties make it discriminating, each learned by the harness reporting
+a useless 1.0: queries held out of the corpus, clustered rather than uniform
+vectors, and a beam far narrower than the corpus. A companion assertion fails
+if recall ever reaches exactly 1.0, since that means the harness has stopped
+measuring anything.
+
+Where scores tie — sparse embeddings tie constantly — set overlap undercounts,
+because Flat and HNSW each return a different, equally good answer. The
+benchmark reports score parity alongside it for that reason.
 
 ---
 
 ## 8. Filtering
+
+> **Deferred to after 0.7.0.** Filtering is net new capability rather than core
+> to storing and finding vectors, and no current workload needs it. Nothing
+> about deferring it is expensive: `meta` is already JSON, the selectivity
+> routing touches no schema, and `filter:` can be added to `search` as a
+> defaulted argument without breaking callers. The design below stands as the
+> plan.
 
 ```cr
 filter = Vecstolite::Filter.eq("language", "fr") &
@@ -510,14 +566,14 @@ flowchart TD
     matching rows only"]
     SEL -->|no, permissive| POST["index.search with allowed set,
     oversample k -> 4k -> 16k,
-    capped at max_oversample"]
+    capped at oversample_rounds"]
     ANN --> R["resolve ord -> entry, memoise payloads"]
     EX --> R
     POST --> R
     R --> OUT["Array(SearchResult)"]
 ```
 
-Defaults: `flat_threshold = 10_000` rows, `ratio = 0.05`, `max_oversample = 3`
+Defaults: `flat_threshold = 10_000` rows, `ratio = 0.05`, `oversample_rounds = 3`
 rounds. All three are settable at open. When the oversample cap is reached the
 result is short of `k` rather than looping to a full-graph search — 0.6.x's
 tombstone loop could escalate to scanning everything on every query.
@@ -568,94 +624,121 @@ end
 this: the reason is graph connectivity, not id arithmetic. A deleted node's
 *edges* vanish with it, and upper-layer nodes are the express lanes — removing
 one can silently sever the route to a live region, or orphan the entry point.
-The `vecsto_vectors` row survives deletion as a routing waypoint; `text`, `meta`
-and `payload_id` are nulled in `vecsto_entries` at delete time, so that space
-returns immediately and `compact!` reclaims only the vector and the graph slot.
 
-The split makes this cleaner than it was: deletion now clears columns in a
-narrow table and leaves the two wide, `ord`-keyed tables untouched until
-compaction.
+So the entry's vector and graph node survive deletion as a routing waypoint,
+while `text`, `meta` and `payload_id` are nulled at delete time. Most of the
+space returns immediately; `compact!` reclaims the vector and the graph slot.
 
-`compact!` rewrites `ord` over survivors, clears `vecsto_nodes`, rebuilds the
-graph, and leaves `id` and `key` untouched.
+Search filters tombstones at the result layer. It asks the index for more hits
+than it needs, widening fourfold per round, for at most `oversample_rounds`
+rounds (default 3). Past that it returns fewer than `k` rather than escalating
+to a whole-graph scan — 0.6.x's unbounded loop turned a heavily tombstoned
+store into a latency cliff on every query.
+
+`compact!` runs in one transaction:
+
+1. Clear the graph. Its nodes reference the entry rows about to go, and every
+   position is invalid after a rebuild anyway.
+2. Purge tombstoned rows and their vectors.
+3. Rebuild the graph from surviving vectors.
+4. Flush, and record the graph metadata as saved.
+
+Ids and keys are untouched, which is what makes compaction safe to run without
+coordinating with callers. The order in step 1 matters and is easy to get
+wrong: the first draft purged first, and the foreign key from `vecsto_nodes`
+rejected it. `Repository#purge_tombstoned` now also deletes dependent node
+rows itself, so it is safe to call in any order — but that is a guard, not a
+substitute for the rebuild, since removing individual nodes leaves holes in
+`ord`.
 
 **Transaction rule (one rule, stated once).** Any operation that changes the
-`ord` space or the graph topology writes its graph meta — `entry_point`,
-`max_layer`, `graph_saved`, `live_count`, `ord_count` — inside the same
-transaction. 0.6.x's `compact!` committed the renumbered rows and then wrote
-meta in a second transaction; a crash between the two leaves a stale entry point
-that may be out of range, so every subsequent search fails.
+`ord` space or the graph topology writes its graph metadata — `entry_point`,
+`max_layer`, `graph_saved`, `live_count` — inside the same transaction as the
+rows those values describe. 0.6.x's `compact!` committed the renumbered rows
+and then wrote metadata in a second transaction; a crash between the two left
+a stale entry point, and every subsequent search failed.
 
-In-memory node caching does not write nodes through. Any operation that mutates
-the graph under `Cache::Memory` therefore sets `graph_saved = 0` in its
-transaction and `close`/`save_graph` sets it back to 1. A crash then falls back
-to a rebuild from entries: slow, always correct. 0.6.x left `graph_saved = 1`
-after `load_all_in_memory!` plus `add`, so entries committed but their nodes did
-not, and those entries became invisible to search.
+Every write records `graph_saved` as whether the node cache writes through.
+Under `CacheMode.memory` that is 0, and only `close` or `compact!` — both of
+which flush inside their transaction — set it to 1. A crash therefore falls
+back to a rebuild from vectors: slow, always correct. 0.6.x left
+`graph_saved = 1` after `load_all_in_memory!` plus `add`, so entries committed
+but their nodes did not, and those entries became invisible to search.
+
+**A failed write rebuilds the index.** A rolled-back transaction restores the
+rows but not the strategy's in-memory state, so the store discards the index
+and rebuilds from the surviving vectors rather than tracking individual graph
+mutations to undo.
+
+**The LRU cache must hold the object it last persisted.** A node held across
+an eviction can be read back as a second, stale object; if that copy is later
+written, it overwrites the real neighbour lists and silently strips edges from
+the graph. `NodeCache::LRU#write_back` reseats the cache to the object it just
+wrote. This bug predates 0.7.0 and only appears under real eviction — which is
+how W1 ran — so the volume specs compare a graph built under constant eviction
+against one built with room to spare.
 
 ---
 
 ## 11. Bugs folded into this work
 
-#|Bug                                                      |Where               
---|---------------------------------------------------------|--------------------
-1|`StaticEmbedder#dimensions` ignores `truncate_dims`      |§9                  
-2|No embedder/dimension check on open                      |§6 `verify_embedder`
-3|`OpenAIEmbedder` does not L2-normalise                   |§9                  
-4|`compact!` writes graph meta outside its transaction     |§10                 
-5|Memory-cache `add` leaves `graph_saved = 1`              |§10                 
-6|`random_layer` uses p = 1/e, not 1/M (`@ml` unused)      |`Index::HNSW`       
-7|`MemoryVectorStore#clear` references a missing getter    |class removed       
-8|Search issues one payload query per result               |§6 memoisation      
-9|Dead code: `truncate_to`, `Candidate#<=>`, `Index#export`|removed             
+All fixed.
 
-Bug 6 changes graph shape: at M = 16 roughly 37% of nodes currently reach layer
-1 or above, against about 6% under the standard formula. The recall harness
-(§7) measures the effect rather than assuming it.
+# |Bug                                                      |Fix                              
+--|---------------------------------------------------------|---------------------------------
+1 |`StaticEmbedder#dimensions` ignores `truncate_dims`      |reports truncated width (§9)     
+2 |No embedder or dimension check on open                   |`verify_embedder` (§6)           
+3 |`OpenAIEmbedder` does not L2-normalise                   |normalised on arrival (§9)       
+4 |`compact!` writes graph meta outside its transaction     |one transaction (§10)            
+5 |Memory-cache `add` leaves `graph_saved = 1`              |records write-through state (§10)
+6 |`random_layer` uses p = 1/e, not 1/m (`@ml` unused)      |exponential draw with `@ml`      
+7 |`MemoryVectorStore#clear` references a missing getter    |class removed                    
+8 |Search issues one payload query per result               |fetched once per search          
+9 |Dead code: `truncate_to`, `Candidate#<=>`, `Index#export`|removed                          
+10|LRU cache serves a stale node after eviction             |`write_back` reseats (§10)       
 
-**Deferred to 0.8:** HNSW's diversity heuristic for neighbour selection
-(Malkov Algorithm 4). Today's "nearest M" can leave a node whose neighbours all
-sit in one cluster with no edge out of it. Worth doing with the recall harness
-in place, not before.
+Bug 10 was found during implementation, by a volume spec that happened to run
+unseeded.
+
+**The neighbour-selection heuristic landed in this release**, not 0.8 as
+proposed. Bug 6 could not be fixed without it. Measured against Flat on
+clustered data (2,000 vectors, 32 dimensions, 50 clusters, m=8,
+ef_construction=64, ef=5, k=5):
+
+&nbsp;              |layer p = 1/e|layer p = 1/m
+--------------------|-------------|-------------
+nearest-m neighbours|0.752        |0.572        
+diversity neighbours|0.936        |**0.976**    
+
+Judged alone, the correct layer draw looked like a 24% recall regression: the
+surplus upper layers had been compensating for a base graph whose edges all
+pointed inward. With diverse neighbours the base graph routes on its own, and
+the shorter graph is both better and cheaper to insert into.
 
 ---
 
-## 12. Implementation plan
+## 12. Delivery
 
-1. **Delete the old stores.** Remove `SQLiteVectorStore`, `LinearVectorStore`,
-   `MemoryVectorStore`, `VectorStore(M)`, `IndexedVectorStore(M)` and their
-   specs. Pure subtraction; the tree compiles smaller.
-2. **`Repository` + schema 4.** Extract every SQL string; add `id`/`key`/`ord`;
-   node stores take the repository instead of table names.
-3. **`Store(M, P)`.** Rebuild the public surface on the repository: open/block
-   form, entry and payload CRUD, bulk, search, compact, stats. Bugs 2, 4, 5, 8.
-4. **`Index::Strategy`.** Extract HNSW behind the interface, add `Flat`, add the
-   recall harness. Bugs 6, 9.
-5. **Embedders.** Batch embedding, shared normalisation, honest `dimensions`.
-   Bugs 1, 3.
-6. **Filtering.** `Filter` AST, strategy selection, tombstones routed through
-   the same `allowed` mechanism.
-7. **Benchmarks (§13).** Extend `samples/benchmark.cr`; produce the cache
-   sizing curve and settle the Flat/HNSW crossover while the schema is still
-   free.
-8. **Docs and release.** Rewrite `README.md` and `DEVELOPMENT.md`, refresh the
-   samples, bump to 0.7.0, write release notes.
+Built in the proposed order with two exceptions: the index extraction was
+pulled forward into the store work, to avoid adapting the old indexer to the
+new node cache only to replace it; and filtering was deferred (§8). Each step
+kept the tree compiling and green by building the new layer alongside the old
+one, then deleting the old in a separate commit.
 
-Steps 1 and 2 are the riskiest to review in one lump; they can be two PRs on the
-feature branch if the diff gets unwieldy. Step 7 must land before step 8: a
-schema choice made after release is a migration script.
+What remains before release is tracked in `SCOPE.md`.
 
 ---
 
 ## 13. Benchmarks
 
-`samples/benchmark.cr` measures none of what the remaining choices depend on.
-Since no workload is latency-bound (§2.1), the goal is not to crown a design
-but to find the cliffs and produce sizing guidance — the cache has never been
-exercised in a way that would reveal either.
+`samples/benchmark.cr` runs six suites. Since no workload is latency-bound
+(§2.1), the goal is not to crown a design but to find the cliffs and produce
+sizing guidance.
 
-All runs at 768 dimensions, Float32, across `Cache::Memory`, `Cache::LRU` and
-`Cache::Disk`, at ~10^3 / 10^4 / 10^5 entries.
+Runs are at 768 dimensions, Float32, across `CacheMode.memory`, `lru` and
+`disk`, at 10^3 and 10^4 entries. The benchmark defaults to `LexicalEmbedder`
+over a synthetic corpus so it runs anywhere, and seeds the graph so runs are
+comparable.
 
 1. **Cache sizing curve (primary).** Query latency and cache hit rate against
    node-cache budget: 0.5 MB, 5 MB, 50 MB, and "fits entirely". At ~3 KB per
@@ -670,15 +753,13 @@ All runs at 768 dimensions, Float32, across `Cache::Memory`, `Cache::LRU` and
    for a bursty document-chunk batch (W2b). Confirms that layout A's cheap
    back-edge updates behave as §5.1 predicts.
 4. **Open and restart cost.** Time to first query after a clean close and after
-   a simulated unclean exit, per cache mode. Confirms `Cache::LRU` as the
+   a simulated unclean exit, per cache mode. Confirms `CacheMode.lru` as the
    default with a number attached.
-5. **Flat/HNSW crossover.** Latency and recall as the corpus grows, plus the
-   footprint difference of running without a graph at all. Answers open
-   question 1 and, specifically, whether a W2a memories store should default
-   to Flat.
+5. **Flat/HNSW crossover.** *Done* — the graph wins at every size measured;
+   see §7.
 6. **Delete and compact.** `compact!` cost against tombstone ratio, and query
-   latency as tombstones accumulate. Gives `max_oversample` (§8) an empirical
-   basis and sizes the 0.8 auto-compaction threshold.
+   latency as tombstones accumulate. Gives `oversample_rounds` an empirical
+   basis and sizes the automatic-compaction threshold.
 
 Results are recorded in `DEVELOPMENT.md` with machine, Crystal version and
 corpus described, so later numbers are comparable rather than merely newer.
@@ -687,14 +768,14 @@ corpus described, so later numbers are comparable rather than merely newer.
 
 ## 14. Open questions
 
-1. Should `Index::Flat` be the default for small stores, chosen automatically
-   below some row count, or always explicit?
-2. Should `upsert` be offered at all, given that it invalidates the old `id`,
-   or should callers delete and add so the id change is unmissable?
-3. Is `meta_index` (§8) worth building in 0.7.0, or does the plain
-   `json_extract` path carry the experimental workload for now?
+1. ~~Should `Index::Flat` be the default for small stores?~~ **Closed: no.** The
+   graph is faster at every size measured (§7).
+2. Should `upsert` be offered at all? A new vector means a new graph position,
+   so `upsert` is delete-plus-add with the caller's id changing underneath.
+   That may be reason enough to make callers write both halves themselves,
+   where the id change is unmissable. Open, and tracked in `SCOPE.md`.
+3. ~~Is `meta_index` worth building in 0.7.0?~~ **Moved** with filtering to
+   after 0.7.0 (§8).
 
-Question 1 is settled by §13's benchmarks and must close before release, since
-it shapes a default. Questions 2 and 3 are API judgement calls and can close at
-review. The layout question (A vs B) and the profiles argument are both
-closed — see §5.1 and §6.
+The layout question (A vs B) and the profiles argument closed during design —
+see §5.1 and §6.

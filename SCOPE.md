@@ -16,30 +16,18 @@ outstanding belongs here, because nobody greps a codebase for open questions.
 
 ### Before 0.7.0 ships
 
-**Benchmarks (`DESIGN.md` §13).** `samples/benchmark.cr` measures none of what
-the remaining choices depend on. The cache-sizing curve and per-instance
-footprint are the two that matter: W1 ran with a 0.5 MB budget against a corpus
-of tens of thousands, which at ~3 KB a node held about 170 of them, and nobody
-ever measured what that cost. The deliverable is a README sizing rule, not a
-verdict.
+**Benchmark results (`DESIGN.md` §13).** The suites exist and `crossover` has
+reported. Still to run at 10,000 entries: `cache` and `footprint`, which
+produce the README sizing rule, then `ingest`, `restart` and `compact` for the
+baseline in `DEVELOPMENT.md`. W1 ran with a 0.5 MB budget against a corpus of
+tens of thousands — about 170 nodes at ~3 KB each — and nobody ever measured
+what that cost.
 
 **`page_size` is inside the schema freeze.** SQLite fixes it at creation, so it
 cannot be changed by a later release without recreating the database. We
 currently leave it at the 4096 default, which fits a 768-dimension Float32
 vector. Confirm against benchmark results, then record the decision in
 `DESIGN.md` §5.1.
-
-**Reconcile `DESIGN.md` with what was built.** The document has drifted in four
-places, all deliberate but none recorded:
-
-1. `CacheMode`, not `Cache` — named around the old top-level `Cache(K, V)`,
-   which no longer exists. Decide: rename, or amend the document.
-2. `Index::Hit` carries `entry_id`, not `ord`. A flat scan has no ords to
-   report, so graph positions never leave the index layer.
-3. `vecsto_vectors` is keyed by `entry_id`; `vecsto_nodes` holds the sole
-   `ord` to `entry_id` mapping. `vecsto_entries` has no `ord` column.
-4. The neighbour-selection heuristic landed in this release, not 0.8. It was
-   worth 0.752 → 0.936 recall, and the layer-probability fix depends on it.
 
 **README sizing guidance.** `README.md` has a marked gap under "Memory" for a
 budget-per-thousand-entries rule, waiting on the `cache` and `footprint`
@@ -51,13 +39,14 @@ stores they exercised. Decide whether the new API needs equivalents or whether
 
 ### Cheap now, expensive later
 
-**Record that HNSW stays the default (`DESIGN.md` §14, question 1 — closed).**
-Measured at 768 dimensions over a synthetic corpus: the graph answers in
-0.13 ms against Flat's 6.72 ms at 1,000 entries, and 0.31 ms against 46.39 ms
-at 10,000. The crossover sits well below a thousand entries, so there is no
-size at which defaulting to Flat makes sense. Flat's roles are the exact
-option and the recall oracle. Needs writing into `DESIGN.md` §7 and the
-README, not further measurement.
+**HNSW parameters are not stored — a regression from 0.6.x.** `m` and
+`ef_construction` never reach `vecsto_meta`, so a store built with `m: 8` and
+reopened with the default `Index.hnsw` continues at `m: 16`. Nothing corrupts,
+but graph quality drifts silently. A likely shape: store both at creation, and
+make `Index.hnsw`'s parameters nilable, with `nil` meaning "whatever this store
+was built with, or the default for a new one". An explicit value that differs
+from the stored one then rebuilds, as a change of `index_kind` already does.
+API-shaped, so before 0.7.0.
 
 **Decide on `upsert` (`DESIGN.md` §14, question 2).** Deliberately left out of
 the deletion work. A new vector means a new graph position, so `upsert` is
