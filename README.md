@@ -1,6 +1,6 @@
 # Vecstolite
 
-A vector embedding-based storage _shard_ for Crystal with in-memory and SQLite3 back-ends.
+A vector store _shard_ for Crystal, backed by SQLite3 on disk or in memory.
 
 > See [DISCLOSURE.md](./DISCLOSURE.md) for how AI is used in this project.
 
@@ -20,47 +20,45 @@ dependencies:
 
 ### Quick start
 
-The fastest way to get started is with a `StaticEmbedder` (no server or GPU required) and a persistent `SQLitePayloadVectorStore`. The static embedder runs entirely locally using a downloaded model file.
+The fastest way to begin is a `StaticEmbedder`, which runs locally from a
+downloaded model with no server or GPU, and a store on disk.
 
 ```mermaid
 flowchart LR
-    T["Text"] --> E["Embedder\ntext → vector"]
-    E --> S["VectorStore\nadd / search"]
-    S --> DB[("SQLite3\n.db file")]
+    T["Text"] --> E["Embedder
+    text to vector"]
+    E --> S["Store
+    add / search"]
+    S --> DB[("SQLite3
+    .db file")]
     Q["Query text"] --> E2["Embedder"]
     E2 --> S
-    S --> R["Top-k results\ntext · score · meta · payload"]
+    S --> R["Top-k results
+    text, score, meta, payload"]
 ```
 
 ```cr
 require "vecstolite"
 
-# 1. Load a local embedding model (WordPiece-based safetensors format).
-#    Download from HuggingFace — see "Embedders" below for tested models.
 embedder = Vecstolite::StaticEmbedder.load("/path/to/model")
 
-# 2. Create a persistent store (or open an existing one).
-store = Vecstolite::SQLitePayloadVectorStore(String, String)
-          .create("my_store.db", embedder)
-# store = Vecstolite::SQLitePayloadVectorStore(String, String)
-#           .open("my_store.db", embedder)
+Vecstolite::Store(String, String).open("my_store.db", embedder) do |store|
+  store.add("The sky is blue during a clear day.")
+  store.add("Roses are red and violets are blue.")
+  store.add("Crystal is a statically typed language with Ruby-like syntax.")
 
-# 3. Add text.
-store.add("The sky is blue during a clear day.")
-store.add("Roses are red and violets are blue.")
-store.add("Crystal is a statically typed language with Ruby-like syntax.")
-store.add("A transformer is a type of neural network architecture.")
-
-# 4. Search.
-store.search("colour of the sky", k: 3).each do |r|
-  puts "[#{r.score.round(4)}] #{r.text}"
+  store.search("colour of the sky", k: 2).each do |result|
+    puts "[#{result.score.round(4)}] #{result.text}"
+  end
 end
-
-# 5. Close (flushes the graph to disk).
-store.close
 ```
 
-That's it. On the next run, replace `.create` with `.open` and skip step 3.
+`open` creates the database if it is missing. The block form closes the store
+— flushing anything held in memory — even if the block raises. Without a
+block, call `close` yourself.
+
+> Databases written by 0.6.x cannot be opened by 0.7. Recreate them by
+> re-running your ingest.
 
 ### Embedders
 
@@ -68,37 +66,52 @@ That's it. On the next run, replace `.create` with `.open` and skip step 3.
 
 ```cr
 embedder = Vecstolite::StaticEmbedder.load(MODEL_PATH)
+
+# Matryoshka models can be truncated for smaller vectors:
+embedder = Vecstolite::StaticEmbedder.load(MODEL_PATH, truncate_dims: 256)
 ```
 
-`MODEL_PATH` must contain `model.safetensors` and `tokenizer.json`. Tested models (download from HuggingFace):
+`MODEL_PATH` must contain `model.safetensors` and `tokenizer.json`. Tested
+models, from HuggingFace:
 
 - [`static-retrieval-mrl-en-v1`](https://huggingface.co/sentence-transformers/static-retrieval-mrl-en-v1) — English only, fast
 - [`static-similarity-mrl-multilingual-v1`](https://huggingface.co/sentence-transformers/static-similarity-mrl-multilingual-v1) — multilingual
 
 > Only WordPiece tokenizers are supported.
 
-#### OpenAI-protocol (Ollama, OpenAI, etc.)
+#### OpenAI-protocol (Ollama, OpenAI, and others)
 
 ```cr
 embedder = Vecstolite::OpenAIEmbedder.new(
   dimensions: 768,
-  base_url:   "http://localhost:11434",
+  base_url:   "http://127.0.0.1:11434",
   api_key:    "ollama",
   model:      "nomic-embed-text-v2-moe",
 )
 ```
 
-Any server that speaks the OpenAI embeddings API works here.
+Any server that speaks the OpenAI embeddings API works. Vectors are
+normalised on arrival, so a server that doesn't return unit vectors still
+produces correct scores. Batch ingest (below) sends one request per batch
+rather than one per entry.
 
-### Vector stores
+#### Writing your own
 
-|Store                           |Backing|Notes                                    |
-|--------------------------------|-------|-----------------------------------------|
-|`SQLitePayloadVectorStore(M, P)`|SQLite3|Typed meta + shared payloads             |
+Include `Vecstolite::VectorEmbedder` and implement `model_name`, `dimensions`
+and `embed`. Two obligations: `embed` must return an L2-normalised vector
+(`l2_normalize!` is provided), and `dimensions` must report what `embed`
+actually returns. Override `embed_all` if your model can embed in batches.
 
-#### `SQLitePayloadVectorStore(M, P)`
+A store records its embedder's name and dimensions, and refuses to open with a
+different one: vectors from different models are not comparable, and mixing
+them produces results that look plausible and are wrong. Pass
+`verify_embedder: false` only if you know otherwise.
 
-`M` is per-embedding metadata; `P` is a shared payload (many embeddings can reference one payload). Both must be `JSON::Serializable`.
+### Entries, metadata and payloads
+
+`Store(M, P)` takes two types. `M` is per-entry metadata; `P` is a payload
+several entries can share. Both must round-trip through JSON —
+`JSON::Serializable`, a `Hash`, or a primitive.
 
 ```cr
 record Lang, code : String do
@@ -109,84 +122,158 @@ record Translation, en : String, fr : String do
   include JSON::Serializable
 end
 
-store = Vecstolite::SQLitePayloadVectorStore(Lang, Translation)
-          .create("translations.db", embedder)
+store = Vecstolite::Store(Lang, Translation).open("translations.db", embedder)
 
-# Store a shared payload, then index it in multiple languages.
-t = Translation.new(en: "The sky is blue.", fr: "Le ciel est bleu.")
-pid = store.add_payload(t)
-store.add(t.en, meta: Lang.new("en"), payload_id: pid)
-store.add(t.fr, meta: Lang.new("fr"), payload_id: pid)
+pair = Translation.new(en: "The sky is blue.", fr: "Le ciel est bleu.")
+pid = store.add_payload(pair)
+store.add(pair.en, meta: Lang.new("en"), payload_id: pid)
+store.add(pair.fr, meta: Lang.new("fr"), payload_id: pid)
 
-# Search returns the matched embedding plus its resolved payload.
-store.search("ciel", k: 2).each do |r|
-  puts "[#{r.score.round(4)}] (#{r.meta.try(&.code)}) #{r.text}"
-  puts "  → EN: #{r.payload.try(&.en)}"
+store.search("ciel", k: 2).each do |result|
+  puts "[#{result.score.round(4)}] (#{result.meta.try(&.code)}) #{result.text}"
+  puts "  EN: #{result.payload.try(&.en)}"
 end
-
-store.close
 ```
 
-##### Bulk insert
-
-For large ingest jobs, `bulk_add` wraps all inserts in a single transaction — significantly faster than individual `add` calls for 100+ entries. Payloads can be created inside the block too, so everything commits or rolls back as one unit:
+`add` returns the entry's id. **Ids are stable**: they survive deletion of
+other entries and compaction, and are never reused. You can also give an entry
+a key of your own, unique within the store:
 
 ```cr
-store.bulk_add do |batch|
+id = store.add("The sky is blue.", key: "doc-42#chunk-3")
+store.get(id)                         # => Entry, or nil
+store.get_by_key("doc-42#chunk-3")    # => the same Entry
+```
+
+If you already have an embedding, pass it and skip the embedder:
+
+```cr
+store.add("The sky is blue.", vector: precomputed)
+store.search_vector(query_vector, k: 3)
+```
+
+### Bulk ingest
+
+`bulk` adds everything in one transaction. Embedding happens *before* the
+transaction opens — in one call to `embed_all` — so a slow or remote embedder
+never holds the database's write lock.
+
+```cr
+store.bulk do |batch|
   inputs.each do |input|
-    pid = batch.add_payload(input.translation)
-    batch.add(input.en, meta: Lang.new("en"), payload_id: pid)
-    batch.add(input.fr, meta: Lang.new("fr"), payload_id: pid)
+    batch.add(input.en, meta: Lang.new("en"), payload_id: input.payload_id)
+    batch.add(input.fr, meta: Lang.new("fr"), payload_id: input.payload_id)
   end
 end
 ```
 
-If the block raises, the transaction is rolled back — no orphaned payload rows, no partial index.
+If anything fails, the whole batch rolls back and the store is left as it was.
 
-##### Memory modes
-
-```cr
-# Default (512 MB LRU cache — balanced):
-store = Vecstolite::SQLitePayloadVectorStore(M, P).create(path, embedder)
-
-# Larger or smaller budget:
-store = Vecstolite::SQLitePayloadVectorStore(M, P).create(path, embedder,
-          cache_max_bytes: 256 * Vecstolite::MB)
-
-# No cache — minimal RAM, slower search:
-store = Vecstolite::SQLitePayloadVectorStore(M, P).create(path, embedder,
-          cache_max_bytes: nil)
-
-# After open, load the full index into RAM for maximum search speed:
-store.load_all_in_memory!
-```
-
-##### Deletion and compaction
-
-`delete_payload` removes a payload and every entry that references it. Removal is a tombstone, not a physical delete — `size` doesn't shrink and the underlying graph keeps the entries as routing waypoints until you `compact!`:
-
-```cr
-store.delete_payload(pid)   # payload gone, its entries excluded from search
-# ... delete more as needed ...
-store.compact!               # reclaims space, renumbers ids, rebuilds the graph
-```
-
-Search transparently skips tombstoned entries, so you don't have to call `compact!` after every delete. Batch deletes and compact once — it's an O(n) rebuild of the live entries, so it's cheaper to call it a handful of times than after each `delete_payload`.
+> Payloads are not yet created inside a batch: add them with `add_payload`
+> first. That means a failed batch can leave payloads with no entries
+> referencing them.
 
 ### Searching
 
 ```cr
 results = store.search("What is the colour of the sky?", k: 3)
-results.each { |r| puts "[#{r.score.round(4)}] #{r.text}" }
 ```
 
-`results` is an `Array` of objects that include `VectorSearchResult` (`text`, `score`). `SQLitePayloadVectorStore` results also carry `meta` and `payload`.
+Each result carries `id`, `key`, `text`, `score` (cosine similarity, 1.0 for
+identical), `meta`, `payload_id` and `payload`. Payloads shared by several
+results are fetched once.
 
-To tune recall vs speed, pass `ef_search` explicitly (higher = better recall, slower):
+To trade speed for recall, widen the search beam:
 
 ```cr
 results = store.search("sky colour", k: 5, ef_search: 100)
 ```
+
+### Deleting and compacting
+
+```cr
+store.delete(id)                  # one entry
+store.delete_by_key("doc-42#chunk-3")
+store.delete_payload(pid)         # a payload and every entry using it
+store.compact!                    # reclaim the space
+```
+
+Deletion is immediate as far as searches, `get` and `size` are concerned. The
+space is reclaimed later: a deleted entry stays wired into the search graph as
+a route to its neighbours until `compact!` rebuilds the graph without it.
+
+Compact after a batch of deletions, not after each one — it rebuilds the
+graph, so its cost is the same whether one entry was deleted or a thousand.
+Ids and keys are unaffected by compaction.
+
+A store with many uncompacted deletions returns fewer than `k` results rather
+than slowing down to find more. `store.tombstones` says how many are pending.
+
+### Index strategies
+
+```cr
+Vecstolite::Store(M, P).open(path, embedder, index: Vecstolite::Index.hnsw)
+Vecstolite::Store(M, P).open(path, embedder, index: Vecstolite::Index.flat)
+```
+
+**`Index.hnsw`** (the default) searches a navigable graph: approximate, and
+fast at every size. Its parameters trade build time and memory for recall:
+
+Parameter        |Default|Higher means                                       
+-----------------|------:|---------------------------------------------------
+`m`              |     16|better recall, more memory, slower ingest          
+`ef_construction`|    200|better graph, slower ingest                        
+`ef_search`      |     50|better recall, slower queries (a `search` argument)
+
+**`Index.flat`** scans every entry: exact, with nothing to build or rebuild.
+It is not a small-store optimisation — measured at 768 dimensions, the graph
+is some 50 times faster at a thousand entries — but it is the right choice
+when you need exact results, and it is what the graph's accuracy is measured
+against.
+
+Reopening a store with a different strategy rebuilds the index from the stored
+vectors.
+
+### Memory
+
+```cr
+Vecstolite::CacheMode.lru(256 * Vecstolite::MB)  # default: bounded, written through
+Vecstolite::CacheMode.memory                     # whole graph in RAM
+Vecstolite::CacheMode.disk                       # nothing cached
+```
+
+Pass one as `cache:` when opening.
+
+- **`lru`** holds as much of the graph as its budget allows and writes every
+  change straight to disk. The right default, and the right choice for
+  anything long-lived or restarted often.
+- **`memory`** is fastest, but writes the graph only when the store closes. If
+  the process exits without closing, the next open rebuilds the graph from the
+  stored vectors — so it suits batch jobs that end cleanly.
+- **`disk`** keeps nothing in memory and reads from the database on every
+  step.
+
+> **Sizing.** Guidance on budget per thousand entries is pending benchmark
+> results.
+
+The cache budget covers graph nodes only. SQLite keeps its own page cache per
+open store, 2 MB by default, set with `page_cache_bytes:`. If you run many
+stores in one process, count both.
+
+### Reading only
+
+```cr
+store = Vecstolite::Store(M, P).open(path, embedder, readonly: true)
+```
+
+A readonly store raises on any write. It also cannot rebuild its index, so it
+refuses to open a store whose graph was not saved cleanly.
+
+### Concurrency
+
+A store is single-threaded. If several fibres share one, serialise access
+yourself — with a `Mutex`, for example. Internal locking would protect
+individual calls but not sequences of them, giving a false sense of safety.
 
 ## Development
 

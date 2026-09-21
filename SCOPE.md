@@ -47,10 +47,9 @@ places, all deliberate but none recorded:
 4. The neighbour-selection heuristic landed in this release, not 0.8. It was
    worth 0.752 → 0.936 recall, and the layer-probability fix depends on it.
 
-**Documentation (`DESIGN.md` §12 step 7).** `README.md` and `DEVELOPMENT.md`
-still describe `SQLitePayloadVectorStore` and an API that no longer exists.
-`DEVELOPMENT.md`'s "Design Decisions" needs the two id spaces, the transaction
-rule, and the recall series behind the HNSW tuning.
+**README sizing guidance.** `README.md` has a marked gap under "Memory" for a
+budget-per-thousand-entries rule, waiting on the `cache` and `footprint`
+benchmarks.
 
 **Samples.** `samples/test00.cr` through `test03.cr` were deleted with the
 stores they exercised. Decide whether the new API needs equivalents or whether
@@ -69,6 +68,15 @@ at 10,000. The crossover sits well below a thousand entries, so there is no
 size at which defaulting to Flat makes sense. Flat's roles are the exact
 option and the recall oracle. Needs writing into `DESIGN.md` §7 and the
 README, not further measurement.
+
+**`bulk` cannot create payloads — a regression from 0.6.x.** The old
+`bulk_add` offered `batch.add_payload`, so payloads and the entries using them
+committed or rolled back together. The new `Batch` defers every insert until
+after embedding, and has no payload method; callers must use
+`Store#add_payload` first, so a failed batch leaves orphaned payload rows. The
+README says so. A likely shape: `Batch#add_payload` returns a placeholder that
+`Batch#add` accepts as `payload:`, resolved to a real id inside the
+transaction. API-shaped, so worth settling before 0.7.0 rather than after.
 
 **Decide on `upsert` (`DESIGN.md` §14, question 2).** Deliberately left out of
 the deletion work. A new vector means a new graph position, so `upsert` is
