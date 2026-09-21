@@ -74,14 +74,23 @@ module Vecstolite
 
     # Embed a single string.  Returns the embedding as Embedding.
     def embed(text : String) : Embedding
-      parse_response(post(build_request_body(text)))
+      embed_all([text]).first
+    end
+
+    # Embeds every text in one request, which is what the endpoint's array
+    # input is for: ingesting a thousand rows costs one round-trip rather than
+    # a thousand. Results come back in request order.
+    def embed_all(texts : Array(String)) : Array(Embedding)
+      return [] of Embedding if texts.empty?
+
+      parse_response(post(build_request_body(texts)), texts.size)
     end
 
     # ---------------------------------------------------------------------------
-    private def build_request_body(text : String) : String
+    private def build_request_body(texts : Array(String)) : String
       obj = {
         "model"           => JSON::Any.new(@model),
-        "input"           => JSON::Any.new(text),
+        "input"           => JSON::Any.new(texts.map { |text| JSON::Any.new(text) }),
         "encoding_format" => JSON::Any.new("float"),
       } of String => JSON::Any
 
@@ -117,17 +126,38 @@ module Vecstolite
       end
     end
 
-    private def parse_response(body : String) : Embedding
+    private def parse_response(body : String, expected : Int32) : Array(Embedding)
       root = JSON.parse(body)
 
       data = root["data"]?.try(&.as_a?) ||
              raise Error.new("Response missing 'data' array")
       raise Error.new("Response 'data' array is empty") if data.empty?
+      unless data.size == expected
+        raise Error.new("Asked for #{expected} embeddings but the response holds #{data.size}.")
+      end
 
-      embedding_any = data[0]["embedding"]?.try(&.as_a?) ||
-                      raise Error.new("Response missing 'data[0].embedding'")
+      # The API may return results out of order; each carries its request
+      # index.
+      results = Array(Embedding?).new(expected, nil)
+      data.each_with_index do |item, position|
+        index = item["index"]?.try(&.as_i?) || position
+        raise Error.new("Response index #{index} is outside the request") unless 0 <= index < expected
 
-      Embedding.new(embedding_any.size) { |i| embedding_any[i].as_f32 }
+        values = item["embedding"]?.try(&.as_a?) ||
+                 raise Error.new("Response missing 'data[#{position}].embedding'")
+        unless values.size == @dimensions
+          raise Error.new(
+            "Model returned #{values.size}-dimension vectors but #{@dimensions} was configured."
+          )
+        end
+
+        # Normalised here rather than trusted: OpenAI's own models return unit
+        # vectors, but an OpenAI-compatible server need not, and every
+        # distance in this shard assumes them.
+        results[index] = l2_normalize!(Embedding.new(values.size) { |i| values[i].as_f32 })
+      end
+
+      results.map { |embedding| embedding || raise Error.new("Response skipped an input.") }
     end
   end
 end
