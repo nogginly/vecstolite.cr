@@ -78,6 +78,10 @@ There is one store class. How it searches, and how much it keeps in memory,
 are arguments rather than separate classes.
 
 ```mermaid
+---
+config:
+  layout: elk
+---
 flowchart TD
     APP["User code"]
     STORE["Store(M, P)
@@ -385,34 +389,145 @@ store does not.
 
 ## Measurements
 
-Benchmark results, with the conditions that produced them. Replace rather than
+The 0.7.0 baseline, with the conditions that produced it. Replace rather than
 append: a stale number is worse than none.
+
+**Conditions, unless a table says otherwise:** Crystal 1.21.0 on Apple M5 Pro;
+`LexicalEmbedder` at 768 dimensions over the benchmark's synthetic
+corpus, every sentence unique; graph seeded; `Index.hnsw` defaults (m=16,
+ef_construction=200, ef_search=50); 50 queries at k=5; 16 KB pages.
+
+`LexicalEmbedder` hashes words, so its vectors are sparse and score ties are
+common. That makes these figures a floor for search quality and a fair measure
+of storage cost, not a prediction of recall on a dense semantic model. Graph
+construction is also measurably slower on this corpus than on the one used
+before it — see "Attribute the ingest slowdown" in `SCOPE.md`.
 
 ### Flat against HNSW
 
-Crystal 1.21.0, `LexicalEmbedder` at 768 dimensions, synthetic corpus, seeded
-graph, 50 queries at k=5.
-
 corpus|strategy|per query|recall (ids)|recall (scores)|database
 -----:|--------|--------:|-----------:|--------------:|-------:
-  1000|flat    |  6.50 ms|       1.000|          1.000|  4.1 MB
-  1000|hnsw    |  0.13 ms|       0.504|          0.960|  4.2 MB
- 10000|flat    | 45.36 ms|       1.000|          1.000| 40.1 MB
- 10000|hnsw    |  0.31 ms|       0.712|          0.960| 41.7 MB
+ 10000|flat    | 32.59 ms|       1.000|          1.000| 32.3 MB
+ 10000|hnsw    |  0.31 ms|       0.496|          1.000| 33.9 MB
+100000|flat    |307.41 ms|       1.000|          1.000|321.4 MB
+100000|hnsw    |  0.44 ms|       0.520|          1.000|337.5 MB
 
-Two readings matter here.
+**The graph wins at every size**, and the gap widens with the corpus: 100× at
+ten thousand entries, 700× at a hundred thousand. At a thousand (4 KB pages)
+it was 0.13 ms against 8.01 ms, so the crossover sits well below that. `Flat`
+is the exact option and the oracle, not a small-store default.
 
-**The graph wins at every size.** 50× at a thousand entries, 150× at ten
-thousand. The crossover sits below a thousand, so there is no corpus size at
-which defaulting to an exact scan makes sense. `Flat` is the exact option and
-the oracle, not a small-store default.
+**Trust the *scores* column.** Where many entries score *exactly* equal
+against a query, Flat and HNSW each return a different, equally correct five,
+and set overlap counts that as a miss. *scores* counts a graph result as
+correct when it scores at least as well as the exact k-th. Anyone benchmarking
+a vector store with id-overlap recall on sparse embeddings will reach the
+wrong conclusion.
 
-**The two recall columns disagree, and the second is the honest one.**
-`LexicalEmbedder` produces sparse hashed bag-of-words vectors, so many entries
-score *exactly* equal against a query. Flat and HNSW then each return a
-different, equally correct five, and set overlap counts that as a miss.
-Anyone benchmarking a vector store with id-overlap recall on sparse
-embeddings will reach the same wrong conclusion.
+### Duplicate vectors
+
+4 KB pages. Each distinct sentence stored five times with an identical vector;
+each query asks for five results, so the only perfect answer is every copy.
+
+corpus            |strategy|per query|recall (ids)|recall (scores)
+------------------|--------|--------:|-----------:|--------------:
+1000 (200 × 5)    |hnsw    |  0.10 ms|       0.992|          1.000
+10000 (2000 × 5)  |hnsw    |  0.21 ms|       0.984|          1.000
+100000 (20000 × 5)|hnsw    |  0.41 ms|       0.572|          0.980
+
+Before neighbour selection kept tied candidates, the equivalent spec measured
+0.79. At a hundred thousand entries ids and scores diverge again: copies of
+*different* sentences can tie with the query too, and any of them is a
+correct answer.
+
+### Cache sizing
+
+corpus|budget|hit rate|per query
+-----:|------|-------:|--------:
+ 10000|0.5 MB|    6.3%|  3.74 ms
+ 10000|5 MB  |   33.2%|  2.88 ms
+ 10000|50 MB |   77.9%|  1.01 ms
+ 10000|memory|     n/a|  0.30 ms
+100000|0.5 MB|    6.3%|  5.64 ms
+100000|5 MB  |   18.8%|  4.77 ms
+100000|50 MB |   41.9%|  3.68 ms
+100000|memory|     n/a|  0.43 ms
+
+A budget holding the whole graph (50 MB at ten thousand entries) is still
+three times slower than `memory`, because `lru` fetches nodes on first touch
+and `memory` loads them at open. The budget moves latency by less than 2×
+across two orders of magnitude; the mode moves it by 8–12×. The README's
+sizing guidance follows from this.
+
+### Ingest
+
+10,000 entries.
+
+config          |style |per entry|database
+----------------|------|--------:|-------:
+hnsw m=16 memory|bulk  |  3.73 ms| 33.9 MB
+hnsw m=16 memory|single|  3.84 ms| 33.9 MB
+hnsw m=8 memory |bulk  |  1.13 ms| 33.2 MB
+hnsw m=8 memory |single|  1.24 ms| 33.2 MB
+hnsw m=16 lru   |bulk  |  7.45 ms| 33.9 MB
+hnsw m=16 lru   |single| 10.72 ms| 33.9 MB
+flat            |bulk  |  0.01 ms| 32.3 MB
+flat            |single|  0.10 ms| 32.3 MB
+
+Three readings. `m=8` inserts three times faster than `m=16`, for a graph
+2% smaller. A write-through `lru` costs twice `memory` on ingest, which is why
+the README suggests loading with `memory` and serving with `lru`. And `bulk`
+saves little over single adds with a memory cache, but 30% with `lru`, where
+each single add is its own transaction.
+
+### Open and first query
+
+4 KB pages. "Unclean" means the store was filled and never closed.
+
+corpus|cache     |exit   |       open|first query
+-----:|----------|-------|----------:|----------:
+  1000|lru 0.5 MB|clean  |    6.03 ms|    1.61 ms
+  1000|lru 0.5 MB|unclean|    2.88 ms|    1.55 ms
+  1000|memory    |clean  |    7.85 ms|    0.16 ms
+  1000|memory    |unclean| 2259.51 ms|    0.16 ms
+ 10000|lru 0.5 MB|clean  |    3.57 ms|    4.16 ms
+ 10000|lru 0.5 MB|unclean|    3.15 ms|    3.98 ms
+ 10000|memory    |clean  |   20.17 ms|    0.40 ms
+ 10000|memory    |unclean|37307.65 ms|    0.33 ms
+ 10000|disk      |clean  |    3.39 ms|    4.22 ms
+ 10000|disk      |unclean|    2.89 ms|    4.04 ms
+
+`lru` and `disk` open in milliseconds whatever happened before, because they
+write through. `memory` after an unclean exit rebuilds the graph from the
+stored vectors: 37 seconds at ten thousand entries, and an earlier run
+measured 144 seconds at a hundred thousand. That is the case for `lru` as the
+default.
+
+### Deletion and compaction
+
+4 KB pages, memory cache.
+
+corpus|deleted|50 queries|   compact!|file before|file after
+-----:|------:|---------:|----------:|----------:|---------:
+ 10000|    10%|  20.92 ms|33034.17 ms|    41.0 MB|   40.9 MB
+ 10000|    25%|  29.85 ms|26360.49 ms|    41.1 MB|   40.9 MB
+ 10000|    50%|  45.38 ms|15930.36 ms|    41.2 MB|   40.9 MB
+
+Search slows as tombstones accumulate — twice as slow at half deleted —
+because the index must look past them. `compact!` costs about as much as
+re-inserting the survivors, so it gets *cheaper* the more has been deleted.
+The file does not shrink: SQLite keeps freed pages for reuse.
+
+### Page size
+
+The 4 KB against 16 KB comparison that chose the default is in `DESIGN.md`
+§5.1.
+
+### Not yet measured
+
+Per-instance footprint. The suite now reports the store's own node-cache
+accounting; until it is re-run, the README's 3.3 KB per node is derived from
+the code rather than measured.
 
 ---
 
