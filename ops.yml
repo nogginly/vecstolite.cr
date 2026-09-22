@@ -69,3 +69,9 @@ actions:
       done
       ./bin/release/benchmark duplicates --sizes 10000,100000 | tee -a bench-pair-benchmark.md
       ./bin/release/benchmark footprint  --sizes 10000,100000 | tee -a bench-pair-benchmark.md
+  bench-all:
+    description: Runs all known benchmarks. THIS TAKES A LONG TIME (> 8h on MBP M5 Pro.)
+    command: |
+      ops bench-16k
+      ops bench-pair
+      ops bench
