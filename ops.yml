@@ -2,13 +2,15 @@ dependencies:
   brew:
     - crystal
   custom:
-    - shards
+    - shards check || shards install
+    - mkdir -p bin && cp lib/ameba/bin/ameba.cr bin
+    - crystal build -o bin/ameba bin/ameba.cr
 hooks:
   before:
     - mkdir -p bin/release bin/debug
 actions:
   build-release:
-    command: SHARDS_BIN_PATH=bin/release shards build --release
+    command: SHARDS_BIN_PATH=bin/release shards --production build --release
     description: Build for release
     alias: br
   build-debug:
@@ -25,8 +27,51 @@ actions:
     command: crystal clear_cache && ops clean
     description: Clear build caches and prior builds
   lint:
-    command: bin/ameba src/
+    command: bin/ameba src/ samples/
     description: Run Crystal source linter (ameba)
-  test:
+  test_specs:
     command: crystal spec -Dtest
     description: Run all tests (spectator)
+  test:
+    command: ops test_specs && ops build && ops lint
+    description: Run all tests (spectator)
+  build-bench:
+    command: crystal build --release samples/benchmark.cr -o bin/release/benchmark
+    alias: bb
+  build-bench-16k:
+    command: VECSTOLITE_PAGE_SIZE=16384 crystal build --release samples/benchmark.cr -o bin/release/benchmark-16k
+    alias: bb16
+  bench:
+    description: Build release binaries and run benchmark; THIS TAKES A LONG TIME.
+    command: |
+      ops bb
+
+      ./bin/release/benchmark all --sizes 1000,10000 | tee bench-small.md
+
+      for suite in cache footprint restart crossover; do
+        ./bin/release/benchmark $suite --sizes 100000 | tee -a bench-100k.md
+      done
+  bench-16k:
+    description: Build release binaries and run benchmark with 16k page size; THIS TAKES A LONG TIME.
+    command: |
+      ops bb16
+      ./bin/release/benchmark-16k cache --sizes 10000,100000 | tee bench-p16k.md
+      ./bin/release/benchmark-16k crossover --sizes 10000,100000 | tee -a bench-p16k.md
+  bench-pair:
+    description: Paired 4 KB / 16 KB page-size comparison; THIS TAKES A LONG TIME.
+    command: |
+      ops bb && ops bb16
+      for bin in benchmark benchmark-16k; do
+        out=bench-pair-$bin.md
+        ./bin/release/$bin cache     --sizes 10000,100000 | tee $out
+        ./bin/release/$bin crossover --sizes 10000,100000 | tee -a $out
+        ./bin/release/$bin ingest    --sizes 10000        | tee -a $out
+      done
+      ./bin/release/benchmark duplicates --sizes 10000,100000 | tee -a bench-pair-benchmark.md
+      ./bin/release/benchmark footprint  --sizes 10000,100000 | tee -a bench-pair-benchmark.md
+  bench-all:
+    description: Runs all known benchmarks. THIS TAKES A LONG TIME (> 8h on MBP M5 Pro.)
+    command: |
+      ops bench-16k
+      ops bench-pair
+      ops bench

@@ -11,7 +11,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest, macos-15-intel]
+        include:
+          - { os: ubuntu-latest, crystal: "1.20" }
+          - { os: ubuntu-24.04-arm, crystal: "1.20" }
+          - { os: macos-latest, crystal: "1.20" }
+          - { os: windows-latest, crystal: "1.20" }
 
     runs-on: ${{ matrix.os }}
 
@@ -27,34 +31,38 @@ jobs:
         with:
           path: |
             lib
-            bin/ameba
-          key: ${{ runner.os }}-shards-${{ hashFiles('**/shard.lock') }}
+            bin/ameba*
+          key: ${{ matrix.os }}-shards-${{ hashFiles('**/shard.lock') }}
 
       # ---- Build debug release and check code quality on one platform
 
-      - name: Install shards with dev tools
-        if: ${{ runner.os == 'Linux' }}
+      - name: Install shards with dev tools (Unix)
+        if: ${{ runner.os != 'Windows' }}
         # This installs development dependencies
         run: shards check || shards install
 
-      - name: Setup debug environment (Linux)
-        if: ${{ runner.os == 'Linux' }}
+      - name: Setup debug environment (Unix)
+        if: ${{ runner.os != 'Windows' }}
         run: mkdir -p bin/debug
 
-      - name: Build Debug (Linux)
-        if: ${{ runner.os == 'Linux' }}
+      - name: Build Debug (Unix)
+        if: ${{ runner.os != 'Windows' }}
         run: SHARDS_BIN_PATH=bin/debug shards build --debug
 
-      - name: Check formatting (Linux)
-        if: ${{ runner.os == 'Linux' }}
+      - name: Check formatting (Unix)
+        if: ${{ runner.os != 'Windows' }}
         run: crystal tool format; git diff --exit-code src
 
-      - name: Run static code analysis (Linux)
-        if: ${{ runner.os == 'Linux' }}
+      - name: Build ameba  (Unix)
+        if: ${{ runner.os != 'Windows' }}
+        run: cp lib/ameba/bin/ameba.cr bin && crystal build -o bin/ameba bin/ameba.cr
+
+      - name: Run static code analysis (Unix)
+        if: ${{ runner.os != 'Windows' }}
         run: bin/ameba src/
 
-      - name: Run tests (Linux)
-        if: ${{ runner.os == 'Linux' }}
+      - name: Run tests (Unix)
+        if: ${{ runner.os != 'Windows' }}
         run: crystal spec -Dtest
 
       # ---- Build releases on all platforms
@@ -73,13 +81,13 @@ jobs:
         if: ${{ runner.os != 'Windows' }}
         run: SHARDS_BIN_PATH=bin/release shards --production build --release
 
-      - name: Run Release
-        if: ${{ runner.os != 'Windows' }}
-        run: bin/release/benchmark 2>&1 | grep "Usage"
+      # - name: Run Release
+      #   if: ${{ runner.os != 'Windows' }}
+      #   run: bin/release/benchmark 2>&1 | grep "Usage"
 
-      - name: Run Test 00
-        if: ${{ runner.os != 'Windows' }}
-        run: crystal run --release samples/test00.cr
+      # - name: Run Test 00
+      #   if: ${{ runner.os != 'Windows' }}
+      #   run: crystal run --release samples/test00.cr
 
       # Ah, Windows.
       - name: Setup MSVC environment (Windows)

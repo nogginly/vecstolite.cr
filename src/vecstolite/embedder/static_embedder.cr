@@ -83,14 +83,10 @@ module Vecstolite
       end
     end
 
-    # The output dimensionality after any truncation.
-    def output_dims : Int32
-      @truncate_dims || @full_dims
-    end
-
-    # Returns the number of dimensions
+    # The number of dimensions `embed` produces, after any Matryoshka
+    # truncation. `full_dims` reports the model's native size.
     def dimensions : Int32
-      @full_dims
+      @truncate_dims || @full_dims
     end
 
     # Embed a single string.  Returns a normalised Embedding.
@@ -121,10 +117,11 @@ module Vecstolite
       # L2 normalise
       l2_normalize!(sum)
 
-      # Matryoshka truncation
+      # Matryoshka truncation. Copied rather than sliced: a slice would keep
+      # the whole full-width buffer alive behind every stored embedding.
       if td = @truncate_dims
-        sum = sum[0, td]
-        l2_normalize!(sum) # re-normalise after truncation
+        truncated = Embedding.new(td) { |i| sum[i] }
+        return l2_normalize!(truncated)
       end
 
       sum
@@ -136,15 +133,6 @@ module Vecstolite
       raise Error.new("Vector size mismatch") unless a.size == b.size
 
       VECM.dot(a, b)
-    end
-
-    # ---------------------------------------------------------------------------
-    private def l2_normalize!(v : Embedding) : Nil
-      norm = Math.sqrt(VECM.dot(v, v))
-      return if norm < 1e-12_f32 # avoid divide-by-zero on zero vectors
-
-      inv = 1.0_f32 / norm
-      v.size.times { |i| v[i] *= inv }
     end
   end
 end

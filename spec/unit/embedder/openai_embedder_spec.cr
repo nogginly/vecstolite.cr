@@ -12,13 +12,13 @@ Spectator.describe Vecstolite::OpenAIEmbedder do
   end
 
   describe "Ollama" do
-    let(base_url) { "http://localhost:11434" }
+    let(base_url) { "http://127.0.0.1:11434" }
     let(model) { "nomic-embed-text-v2-moe" }
     let(embedder) { described_class.new(dimensions, api_key, model, base_url) }
 
     describe "#model_name" do
       it "ends with '@localhost'" do
-        expect(embedder.model_name).to end_with("@localhost")
+        expect(embedder.model_name).to end_with("@127.0.0.1")
       end
       it "starts with model" do
         expect(embedder.model_name).to start_with(model)
@@ -31,7 +31,7 @@ Spectator.describe Vecstolite::OpenAIEmbedder do
           base_name = __DIR__
         end
         it "succeeds" do
-          Wiretap.intercept("embed") do
+          Wiretap.intercept("ollama-openai-embed") do
             embedding = embedder.embed("The weather in the Ozarks is colder today than yesterday.")
             expect(embedding).to be_a(Slice(Float32))
             expect(embedding.size).to eq(dimensions)

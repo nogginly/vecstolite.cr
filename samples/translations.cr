@@ -1,5 +1,13 @@
 require "../src/vecstolite"
 
+# Shared payloads: one translation set, searchable in every language it holds.
+# Each language's text is its own entry, tagged with metadata, and all of them
+# point at the same payload — so a French query returns the English and German
+# alongside.
+#
+#   crystal run samples/translations.cr            # build, search, delete
+#   crystal run samples/translations.cr -- --open  # reopen and search again
+
 # ---------------------------------------------------------------------------
 # Domain types
 # ---------------------------------------------------------------------------
@@ -18,20 +26,15 @@ end
 # Setup
 # ---------------------------------------------------------------------------
 
-DBNAME = "test04.db"
+DBNAME = "translations.db"
 
 open_existing = ARGV[0]? == "--open"
 
 embedder = Vecstolite::LexicalEmbedder.new(dimensions: 512)
 
-store = if open_existing
-          Vecstolite::SQLitePayloadVectorStore(EmbeddingMeta, TranslationSet)
-            .open(DBNAME, embedder)
-        else
-          Dir.glob("#{DBNAME}*") { |f| File.delete?(f) }
-          Vecstolite::SQLitePayloadVectorStore(EmbeddingMeta, TranslationSet)
-            .create(DBNAME, embedder)
-        end
+Dir.glob("#{DBNAME}*") { |file| File.delete?(file) } unless open_existing
+
+store = Vecstolite::Store(EmbeddingMeta, TranslationSet).open(DBNAME, embedder)
 
 # ---------------------------------------------------------------------------
 # Populate (skipped when --open)
@@ -62,12 +65,17 @@ translations = [
 
 begin
   unless open_existing
-    translations.each do |t|
-      pid = store.add_payload(t)
-      # Each phrase is indexed in all three languages, sharing one payload.
-      store.add(t.en, meta: EmbeddingMeta.new("en"), payload_id: pid)
-      store.add(t.fr, meta: EmbeddingMeta.new("fr"), payload_id: pid)
-      store.add(t.de, meta: EmbeddingMeta.new("de"), payload_id: pid)
+    # One transaction for everything. A payload queued in the batch has no id
+    # until the batch commits, so `add_payload` returns a placeholder that
+    # `add` accepts in its place.
+    store.bulk do |batch|
+      translations.each do |translation|
+        set = batch.add_payload(translation)
+        # Each phrase is indexed in all three languages, sharing one payload.
+        batch.add(translation.en, meta: EmbeddingMeta.new("en"), payload_id: set)
+        batch.add(translation.fr, meta: EmbeddingMeta.new("fr"), payload_id: set)
+        batch.add(translation.de, meta: EmbeddingMeta.new("de"), payload_id: set)
+      end
     end
 
     puts "Stored #{translations.size} translation sets " \
@@ -88,19 +96,31 @@ begin
     "learning from data",
   ]
 
-  queries.each do |q|
-    puts "Query: #{q}"
+  queries.each do |query|
+    puts "Query: #{query}"
     puts "-" * 60
-    store.search(q, k: 3).each_with_index do |r, i|
-      lang = r.meta.try(&.language) || "?"
-      en = r.payload.try(&.en) || "(no payload)"
-      puts "  #{i + 1}. [#{r.score.round(4)}] (#{lang}) #{r.text}"
+    store.search(query, k: 3).each_with_index do |result, i|
+      lang = result.meta.try(&.language) || "?"
+      en = result.payload.try(&.en) || "(no payload)"
+      puts "  #{i + 1}. [#{result.score.round(4)}] (#{lang}) #{result.text}"
       puts "       → EN: #{en}"
     end
     puts
   end
+  # -------------------------------------------------------------------------
+  # Delete and compact
+  # -------------------------------------------------------------------------
+
+  unless open_existing
+    first = store.search("What colour is the sky?", k: 1).first
+    puts "Deleting payload #{first.payload_id} (#{first.text})"
+    if pid = first.payload_id
+      puts "  #{store.delete_payload(pid)} entries tombstoned, #{store.tombstones} awaiting compaction."
+    end
+    store.compact!
+    puts "  after compact!: #{store.size} entries, #{store.tombstones} tombstones."
+    puts
+  end
 ensure
   store.close
-  puts store.stats
-  puts
 end
