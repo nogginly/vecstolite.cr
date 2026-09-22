@@ -201,16 +201,21 @@ results = store.search("sky colour", k: 5, ef_search: 100)
 store.delete(id)                  # one entry
 store.delete_by_key("doc-42#chunk-3")
 store.delete_payload(pid)         # a payload and every entry using it
-store.compact!                    # reclaim the space
+store.compact!                    # purge deleted entries, rebuild the graph
 ```
 
-Deletion is immediate as far as searches, `get` and `size` are concerned. The
-space is reclaimed later: a deleted entry stays wired into the search graph as
-a route to its neighbours until `compact!` rebuilds the graph without it.
+Deletion is immediate as far as searches, `get` and `size` are concerned. A
+deleted entry's text and metadata are released at once, but its vector stays
+wired into the search graph as a route to its neighbours until `compact!`
+rebuilds the graph without it.
 
-Compact after a batch of deletions, not after each one — it rebuilds the
-graph, so its cost is the same whether one entry was deleted or a thousand.
-Ids and keys are unaffected by compaction.
+Compact after a batch of deletions, not after each one. It rebuilds the graph
+from the surviving entries, so it costs about as much as adding them all again
+— whether one entry was deleted or a thousand. Ids and keys are unaffected.
+
+The database file does not shrink when you compact. SQLite keeps the freed
+space and reuses it for later additions rather than returning it to the
+filesystem.
 
 A store with many uncompacted deletions returns fewer than `k` results rather
 than slowing down to find more. `store.tombstones` says how many are pending.
@@ -261,8 +266,29 @@ Pass one as `cache:` when opening.
 - **`disk`** keeps nothing in memory and reads from the database on every
   step.
 
-> **Sizing.** Guidance on budget per thousand entries is pending benchmark
-> results.
+**Sizing.** At 768 dimensions a graph node takes about 3.3 KB, so the whole
+graph needs roughly **3.3 MB per 1,000 entries**. Scale with your model's
+width: a node is about `dimensions × 4` bytes plus 250.
+
+The budget matters less than you might expect. Measured at 768 dimensions,
+per query:
+
+Entries|0.5 MB|  5 MB| 50 MB|`memory`
+------:|-----:|-----:|-----:|-------:
+ 10,000|3.7 ms|2.8 ms|0.9 ms|  0.3 ms
+100,000|5.1 ms|4.4 ms|3.4 ms|  0.4 ms
+
+Even a budget larger than the whole graph stays well behind `memory`, because
+`lru` fetches nodes as searches first touch them, while `memory` loads them all
+when the store opens. So:
+
+- **Queried at human or model speed** — an agent's memory, retrieval for a
+  chat — a small `lru` budget is fine. A few milliseconds is invisible there.
+- **Queried in a tight loop** — batch jobs, evaluations — use `memory`, and
+  close the store cleanly when done.
+- **Both** — ingest a large corpus with `memory`, close it, then serve it with
+  `lru`. The cache mode is chosen each time a store opens, not fixed when it is
+  created.
 
 The cache budget covers graph nodes only. SQLite keeps its own page cache per
 open store, 2 MB by default, set with `page_cache_bytes:`. If you run many

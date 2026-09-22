@@ -87,16 +87,6 @@ module Benchmarks
     Dir.glob("#{DB_PATH}*").sum { |file| File.size(file).to_i64 }
   end
 
-  # Heap in use after a collection, standing in for per-instance footprint.
-  #
-  # Not `heap_size` on its own: that is a high-water mark which never shrinks,
-  # so after a fill has grown the heap every later delta reads as zero.
-  def self.heap_bytes : Int64
-    GC.collect
-    stats = GC.stats
-    (stats.heap_size - stats.free_bytes).to_i64
-  end
-
   def self.mb(bytes : Int64) : String
     "%.1f MB" % (bytes / 1_048_576.0)
   end
@@ -154,11 +144,20 @@ module Benchmarks
   # ---------------------------------------------------------------------------
   # 2. Footprint — how many instances fit on one machine.
   # ---------------------------------------------------------------------------
+  # Reports what the store accounts for, not what the collector sees. Two
+  # earlier versions measured the process heap and both failed: `heap_size`
+  # is a high-water mark that never shrinks, and bytes in use went negative,
+  # because a conservative collector frees the previous fill's garbage during
+  # the measurement. The heap cannot isolate one store; the store can.
   def self.footprint(embedder, sizes : Array(Int32)) : Nil
     puts "\n## Per-instance footprint"
     puts
-    puts "| corpus | cache | heap in use | database |"
-    puts "|-------:|-------|------------:|---------:|"
+    puts "Node cache is what the store holds in memory for its graph, after"
+    puts "#{QUERIES} queries. SQLite's own page cache is separate, and set with"
+    puts "`page_cache_bytes:` (#{mb(Vecstolite::Repository::DEFAULT_PAGE_CACHE_BYTES)} by default)."
+    puts
+    puts "| corpus | cache | node cache | per entry | database |"
+    puts "|-------:|-------|-----------:|----------:|---------:|"
 
     modes = {
       "lru 0.5 MB" => CacheMode.lru(512_i64 * Vecstolite::KB),
@@ -175,14 +174,13 @@ module Benchmarks
         reset_db
         Store.open(DB_PATH, embedder, index: graph, cache: mode) { |store| fill(store, texts) }
 
-        baseline = heap_bytes
         store = Store.open(DB_PATH, embedder, index: graph, cache: mode)
         search_all(store, probes)
-        used = heap_bytes - baseline
-        stored = db_bytes
+        held = store.stats[:cache_bytes]
         store.close
 
-        puts "| #{size} | #{label} | #{mb(used)} | #{mb(stored)} |"
+        per_entry = "%.2f KB" % (held / size / 1024.0)
+        puts "| #{size} | #{label} | #{mb(held)} | #{per_entry} | #{mb(db_bytes)} |"
       end
     end
     reset_db

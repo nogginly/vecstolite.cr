@@ -40,14 +40,18 @@ module Vecstolite
     # opening an existing one, so it cannot be changed later without
     # recreating the database.
     #
-    # Chosen for vector rows: a page holds whole rows only, so a 3 KB vector
-    # (768 Float32 dimensions) in a 4 KB page wastes a quarter of it, and a
-    # vector larger than a page overflows into a second one.
+    # A page holds whole rows, so row size against page size decides the
+    # waste. A 768-dimension Float32 vector is 3 KB: one per 4 KB page, a
+    # quarter wasted; five per 16 KB page. Measured at 100,000 entries, 16 KB
+    # pages made the database 19% smaller and exact scans 44% faster, at the
+    # cost of 7-11% slower LRU cache misses and 6% slower write-through
+    # inserts. At 1,024 dimensions a vector would not fit a 4 KB page at all.
+    # See DESIGN.md §5.1.
     #
     # Overridable at build time, for measuring alternatives:
     #
-    #   VECSTOLITE_PAGE_SIZE=16384 crystal build ...
-    PAGE_SIZE = {{ (env("VECSTOLITE_PAGE_SIZE") || "4096").to_i }}
+    #   VECSTOLITE_PAGE_SIZE=4096 crystal build ...
+    PAGE_SIZE = {{ (env("VECSTOLITE_PAGE_SIZE") || "16384").to_i }}
 
     # How vectors are encoded in `vecsto_vectors`. Recorded in metadata so a
     # future encoding can be introduced without a schema migration.

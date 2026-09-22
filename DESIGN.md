@@ -1,4 +1,4 @@
-# Design: Vecstolite 0.7.0
+# Design: As of Vecstolite 0.7.0
 
 Status: **accepted, as built** — reconciled with the implementation on the
 `redesign-for-0.7.0` branch. Where the build departed from the original
@@ -257,9 +257,37 @@ would mean a permanent config axis and a doubled test surface bought to win a
 race nobody is running. Layout A is simpler, right for the write-heavy
 workloads, and never badly wrong for W1.
 
-A 3 KB vector also fits inside SQLite's default 4096-byte page, so `page_size`
-needs no special handling at 768 dimensions. It is fixed at creation, and
-therefore inside the freeze, but 4096 is the right default here.
+**Page size is 16 KB, not SQLite's 4 KB default.** This section originally
+concluded that a 3 KB vector "fits" a 4 KB page and needed no special
+handling. Measurement said otherwise: a page holds whole rows, so one 3 KB row
+per 4 KB page wastes a quarter of it, and 100,000 entries took 417 MB — 4.2 KB
+each for a 3 KB vector. A 16 KB page holds five such rows.
+
+Measured at 768 dimensions, same corpus, only the page size changed:
+
+&nbsp;                         |    4 KB|   16 KB|change
+-------------------------------|-------:|-------:|-----:
+database, 100,000 entries      |417.2 MB|337.5 MB|  −19%
+exact scan per query, 100,000  |  549 ms|  307 ms|  −44%
+HNSW query, graph in memory    | 0.45 ms| 0.44 ms|  none
+HNSW query, 0.5 MB LRU, 100,000| 5.09 ms| 5.64 ms|  +11%
+HNSW query, 50 MB LRU, 100,000 | 3.43 ms| 3.68 ms|   +7%
+insert, memory cache, 10,000   | 3.74 ms| 3.73 ms|  none
+insert, LRU single adds, 10,000|10.15 ms|10.72 ms|   +6%
+
+Bigger pages cost something where a cache miss reads a page: LRU queries and
+write-through inserts, by 6–11%. The feared write amplification — WAL writes
+whole pages, and every back-edge update dirties one — barely showed. Against
+that, every database is a fifth smaller and exact scans nearly twice as fast.
+With nothing latency-bound (§2.1) and many W2 instances sharing a disk, the
+smaller file wins. Larger models tip it further: a 1,024-dimension vector is
+4 KB and would not fit a 4 KB page at all, costing two pages per vector.
+
+The value is `Repository::PAGE_SIZE`, a constant rather than an `open`
+argument: an option would be permanent API, while a constant can become one
+later without breaking anyone. It can be overridden at build time with
+`VECSTOLITE_PAGE_SIZE` for measurement. Like all page sizes it is fixed when a
+database is created, so databases made before this change keep 4 KB pages.
 
 ### 5.2 Why SQLite, still
 

@@ -14,25 +14,7 @@ outstanding belongs here, because nobody greps a codebase for open questions.
 
 ## MUST FIX
 
-**Benchmark re-run at 100,000 (`DESIGN.md` §13).** The 1,000 and 10,000 runs
-are sound and go into `DEVELOPMENT.md`. At 100,000 the corpus was duplicated
-(above) and the footprint suite measured the heap's high-water mark rather
-than memory in use, so every delta read as zero. Both are fixed; `cache`,
-`footprint`, `crossover` and `duplicates` need running again at that size.
-`duplicates` also confirms at scale the neighbour-selection fix for identical
-vectors, which the spec measures only at 1,000 entries.
-
-**`page_size` (`DESIGN.md` §5.1).** Now an explicit constant,
-`Repository::PAGE_SIZE`, still 4,096 and overridable at build time with
-`VECSTOLITE_PAGE_SIZE`. The measurement argues against keeping it: 100,000
-entries took 416 MB, or 4.16 KB each for a 3.07 KB vector, because a page
-holds whole rows and a 3 KB row wastes a quarter of a 4 KB page. 16,384-byte
-pages fit five such rows. Measure database size and cache-miss latency at
-4,096 and 16,384, then choose — and record the choice in `DESIGN.md` §5.1.
-
-**README sizing guidance.** `README.md` has a marked gap under "Memory" for a
-budget-per-thousand-entries rule, waiting on the `cache` and `footprint`
-benchmarks.
+Nothing currently.
 
 ---
 
@@ -51,6 +33,23 @@ before compacting half its entries away and 40.9 MB after. The space is reused
 by later inserts; only `VACUUM` returns it to the filesystem, and it rewrites
 the whole file to do so. A `vacuum:` option on `compact!`, or a separate
 `vacuum!`, would give callers the choice.
+
+**Attribute the ingest slowdown.** Between two benchmark runs, inserts at
+10,000 entries went from 1.52 ms to 3.73 ms with a memory cache, and rebuilds
+slowed in step (`compact!` 13 s to 33 s); queries did not change. Two things
+changed in between: every benchmark sentence gained a shared word and a unique
+tag, and neighbour selection began keeping tied candidates. One A/B settles it
+— `ingest --sizes 10000` with the tie comparison temporarily strict. If the
+tie rule is the cause, it is a trade between duplicate recall (0.79 → 1.0) and
+insert speed, to be documented as such. No schema involvement either way: a
+changed rule applies to new inserts, and to a whole graph at its next
+`compact!`.
+
+**Footprint figures.** The suite now reports the store's own node-cache
+accounting (`stats[:cache_bytes]`), after two attempts to measure the process
+heap failed: its high-water mark never shrinks, and bytes in use went negative
+under a conservative collector. Re-run `footprint` to replace the 3.3 KB per
+node the README currently derives from the code.
 
 **Metadata filtering (`DESIGN.md` §8).** The `Filter` AST over `json_extract`,
 with selectivity routing between post-filtered HNSW and an exact scan over
